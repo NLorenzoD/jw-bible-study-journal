@@ -3,7 +3,6 @@
 import {
   browserLocalPersistence,
   GoogleAuthProvider,
-  OAuthProvider,
   User,
   getRedirectResult,
   onAuthStateChanged,
@@ -21,7 +20,6 @@ interface AuthContextValue {
   loading: boolean;
   canAuth: boolean;
   signInWithGoogle: () => Promise<void>;
-  signInWithApple: () => Promise<void>;
   signOut: () => Promise<void>;
 }
 
@@ -81,19 +79,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
         const provider = new GoogleAuthProvider();
         provider.setCustomParameters({ prompt: 'select_account' });
-        try {
-          await signInWithPopup(auth, provider);
-        } catch {
-          await signInWithRedirect(auth, provider);
-        }
-      },
-      signInWithApple: async () => {
-        if (!auth) {
-          return;
-        }
-        const provider = new OAuthProvider('apple.com');
-        provider.addScope('email');
-        provider.addScope('name');
         try {
           await signInWithPopup(auth, provider);
         } catch {

@@ -2,6 +2,7 @@
 
 import { AnimatePresence, motion } from 'framer-motion';
 import { Moon, Sun } from 'lucide-react';
+import Image from 'next/image';
 import { usePathname } from 'next/navigation';
 
 import { BottomNav } from '@/components/layout/bottom-nav';
@@ -21,8 +22,10 @@ const TITLES: Record<string, string> = {
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { theme, toggleTheme } = useTheme();
-  const { canAuth, loading, user, signInWithGoogle, signInWithApple, signOut } = useAuth();
+  const { canAuth, loading, user, signInWithGoogle, signOut } = useAuth();
   const { lastSyncMessage } = useSyncEngine();
+  const profileLabel = user?.displayName ?? user?.email ?? 'Your account';
+  const profileInitial = profileLabel.trim().charAt(0).toUpperCase();
 
   return (
     <div className="mx-auto min-h-screen max-w-screen-sm px-4 pb-24 pt-5">
@@ -45,7 +48,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <span className="text-muted">Checking sign-in status...</span>
             ) : user ? (
               <>
-                <span className="text-muted">Signed in as {user.email ?? user.displayName ?? 'your account'}</span>
+                <div className="flex min-w-0 items-center gap-2">
+                  {user.photoURL ? (
+                    <Image
+                      src={user.photoURL}
+                      alt={profileLabel}
+                      width={28}
+                      height={28}
+                      unoptimized
+                      className="h-7 w-7 rounded-full border border-muted/20 object-cover"
+                    />
+                  ) : (
+                    <span className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-muted/20 bg-muted/15 text-[11px] font-semibold text-ink">
+                      {profileInitial}
+                    </span>
+                  )}
+                  <span className="truncate text-muted">Signed in as {profileLabel}</span>
+                </div>
                 <Button variant="secondary" className="px-3 py-1" onClick={signOut}>
                   Sign out
                 </Button>
@@ -53,14 +72,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             ) : (
               <>
                 <span className="text-muted">Sign in to sync across devices</span>
-                <div className="flex items-center gap-1">
-                  <Button variant="secondary" className="px-2 py-1 text-xs" onClick={signInWithGoogle}>
-                    Google
-                  </Button>
-                  <Button variant="secondary" className="px-2 py-1 text-xs" onClick={signInWithApple}>
-                    Apple
-                  </Button>
-                </div>
+                <Button variant="secondary" className="px-2 py-1 text-xs" onClick={signInWithGoogle}>
+                  Google
+                </Button>
               </>
             )}
           </div>

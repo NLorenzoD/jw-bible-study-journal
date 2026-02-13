@@ -1,4 +1,15 @@
 {
+  "hosting": {
+    "public": "out",
+    "predeploy": [
+      "npm run build"
+    ],
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ]
+  },
   "functions": [
     {
       "source": "firebase/functions",
