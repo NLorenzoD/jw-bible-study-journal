@@ -19,6 +19,7 @@ import { createId, upsertReminder } from '@/lib/store/repository';
 
 const STREAK_PREFS_KEY = 'streak-inputs';
 const SHARING_PREFS_KEY = 'sharing-prefs';
+const FALLBACK_LOCAL_USER_ID = '00000000-0000-0000-0000-000000000010';
 
 export default function SettingsPage() {
   const { user, loading: authLoading } = useAuth();
@@ -51,6 +52,13 @@ export default function SettingsPage() {
   const [cloudJournalCount, setCloudJournalCount] = useState<number | null>(null);
   const [cloudJournalCheckedAt, setCloudJournalCheckedAt] = useState<string | null>(null);
   const [cloudJournalCheckInFlight, setCloudJournalCheckInFlight] = useState(false);
+  const [forceUploadInFlight, setForceUploadInFlight] = useState(false);
+  const [cloudProjectCount, setCloudProjectCount] = useState<number | null>(null);
+  const [cloudQuestionCount, setCloudQuestionCount] = useState<number | null>(null);
+  const [cloudQuestionLinkCount, setCloudQuestionLinkCount] = useState<number | null>(null);
+  const [cloudProjectCheckedAt, setCloudProjectCheckedAt] = useState<string | null>(null);
+  const [cloudProjectCheckInFlight, setCloudProjectCheckInFlight] = useState(false);
+  const [forceProjectUploadInFlight, setForceProjectUploadInFlight] = useState(false);
 
   const syncQueue = useLiveQuery(() => db.syncMutations.orderBy('updated_at').reverse().toArray(), []);
   const lastPullMeta = useLiveQuery(() => db.meta.get('last_pull_at'), []);
@@ -59,6 +67,15 @@ export default function SettingsPage() {
     async () => {
       const entries = await db.journalEntries.where('user_id').equals(userId).toArray();
       return entries.filter((entry) => entry.sync_status !== 'synced').length;
+    },
+    [userId]
+  );
+  const localProjectCount = useLiveQuery(() => db.projects.where('user_id').equals(userId).count(), [userId]);
+  const localQuestionCount = useLiveQuery(() => db.questions.where('user_id').equals(userId).count(), [userId]);
+  const localQuestionLinkCount = useLiveQuery(
+    async () => {
+      const links = await db.linkReferences.where('parent_type').equals('question').toArray();
+      return links.filter((link) => link.user_id === userId).length;
     },
     [userId]
   );
@@ -445,6 +462,225 @@ export default function SettingsPage() {
     }
   }
 
+  async function forceUploadLocalJournalEntries() {
+    if (!firestore || !user) {
+      setSyncDiagnosticsStatus('Sign in first, then run local journal upload.');
+      return;
+    }
+
+    setForceUploadInFlight(true);
+    setSyncDiagnosticsStatus('Uploading local journal entries to Firestore...');
+
+    try {
+      const allLocal = await db.journalEntries.toArray();
+      const candidates = allLocal.filter(
+        (entry) => entry.user_id === user.uid || entry.user_id === FALLBACK_LOCAL_USER_ID
+      );
+
+      if (!candidates.length) {
+        setSyncDiagnosticsStatus('No local journal entries found to upload.');
+        return;
+      }
+
+      let uploaded = 0;
+      for (const entry of candidates) {
+        const normalized = {
+          ...entry,
+          user_id: user.uid,
+          household_id: householdId,
+          tags: Array.isArray(entry.tags) ? entry.tags : [],
+          updated_at: entry.updated_at ?? new Date().toISOString(),
+          created_at: entry.created_at ?? new Date().toISOString()
+        };
+
+        await setDoc(doc(firestore, 'journalEntries', normalized.id), normalized, { merge: true });
+
+        await db.journalEntries.put({
+          ...normalized,
+          sync_status: 'synced',
+          synced_at: new Date().toISOString()
+        });
+
+        uploaded += 1;
+      }
+
+      await db.syncMutations
+        .where('entity')
+        .equals('journalEntries')
+        .and((mutation) => candidates.some((entry) => entry.id === mutation.record_id))
+        .delete();
+
+      setSyncDiagnosticsStatus(`Upload complete: ${uploaded} journal entries copied to Firestore.`);
+      await checkCloudJournalEntries();
+    } catch (error) {
+      setSyncDiagnosticsStatus(error instanceof Error ? `Journal upload failed: ${error.message}` : 'Journal upload failed.');
+    } finally {
+      setForceUploadInFlight(false);
+    }
+  }
+
+  async function checkCloudProjectData() {
+    if (!firestore || !user) {
+      setSyncDiagnosticsStatus('Sign in first, then check cloud project data.');
+      return;
+    }
+
+    setCloudProjectCheckInFlight(true);
+    try {
+      const [projectsSnapshot, questionsSnapshot, linksSnapshot] = await Promise.all([
+        getDocs(query(collection(firestore, 'studyProjects'), where('user_id', '==', user.uid))),
+        getDocs(query(collection(firestore, 'studyQuestions'), where('user_id', '==', user.uid))),
+        getDocs(query(collection(firestore, 'linkReferences'), where('user_id', '==', user.uid)))
+      ]);
+
+      const questionLinks = linksSnapshot.docs.filter((entry) => entry.data().parent_type === 'question');
+
+      setCloudProjectCount(projectsSnapshot.size);
+      setCloudQuestionCount(questionsSnapshot.size);
+      setCloudQuestionLinkCount(questionLinks.length);
+      setCloudProjectCheckedAt(new Date().toISOString());
+      setSyncDiagnosticsStatus(
+        `Cloud project check complete: ${projectsSnapshot.size} projects, ${questionsSnapshot.size} questions, ${questionLinks.length} question links.`
+      );
+    } catch (error) {
+      setSyncDiagnosticsStatus(error instanceof Error ? `Cloud project check failed: ${error.message}` : 'Cloud project check failed.');
+    } finally {
+      setCloudProjectCheckInFlight(false);
+    }
+  }
+
+  async function forceUploadLocalProjectData() {
+    if (!firestore || !user) {
+      setSyncDiagnosticsStatus('Sign in first, then run local project upload.');
+      return;
+    }
+
+    setForceProjectUploadInFlight(true);
+    setSyncDiagnosticsStatus('Uploading local projects, questions, and links to Firestore...');
+
+    try {
+      const [allProjects, allQuestions, allQuestionLinks] = await Promise.all([
+        db.projects.toArray(),
+        db.questions.toArray(),
+        db.linkReferences.where('parent_type').equals('question').toArray()
+      ]);
+
+      const candidateProjects = allProjects.filter(
+        (project) => project.user_id === user.uid || project.user_id === FALLBACK_LOCAL_USER_ID
+      );
+      const candidateProjectIds = new Set(candidateProjects.map((project) => project.id));
+
+      const candidateQuestions = allQuestions.filter(
+        (question) =>
+          question.user_id === user.uid ||
+          question.user_id === FALLBACK_LOCAL_USER_ID ||
+          candidateProjectIds.has(question.project_id)
+      );
+      const candidateQuestionIds = new Set(candidateQuestions.map((question) => question.id));
+
+      const candidateQuestionLinks = allQuestionLinks.filter(
+        (link) =>
+          link.user_id === user.uid || link.user_id === FALLBACK_LOCAL_USER_ID || candidateQuestionIds.has(link.parent_id)
+      );
+
+      let uploadedProjects = 0;
+      for (const project of candidateProjects) {
+        const normalized = {
+          ...project,
+          user_id: user.uid,
+          household_id: householdId,
+          archived: Boolean(project.archived),
+          updated_at: project.updated_at ?? new Date().toISOString(),
+          created_at: project.created_at ?? new Date().toISOString()
+        };
+
+        await setDoc(doc(firestore, 'studyProjects', normalized.id), normalized, { merge: true });
+        await db.projects.put({
+          ...normalized,
+          sync_status: 'synced',
+          synced_at: new Date().toISOString()
+        });
+        uploadedProjects += 1;
+      }
+
+      let uploadedQuestions = 0;
+      for (const question of candidateQuestions) {
+        const normalizedStatus =
+          question.status === 'open' || question.status === 'in_progress' || question.status === 'answered'
+            ? question.status
+            : 'open';
+
+        const normalized = {
+          ...question,
+          user_id: user.uid,
+          household_id: householdId,
+          status: normalizedStatus,
+          notes: question.notes ?? '',
+          conclusion: question.conclusion ?? '',
+          shareable_insight: question.shareable_insight ?? '',
+          is_conflict_copy: Boolean(question.is_conflict_copy),
+          conflict_of: question.conflict_of ?? null,
+          updated_at: question.updated_at ?? new Date().toISOString(),
+          created_at: question.created_at ?? new Date().toISOString()
+        };
+
+        await setDoc(doc(firestore, 'studyQuestions', normalized.id), normalized, { merge: true });
+        await db.questions.put({
+          ...normalized,
+          sync_status: 'synced',
+          synced_at: new Date().toISOString()
+        });
+        uploadedQuestions += 1;
+      }
+
+      let uploadedLinks = 0;
+      for (const link of candidateQuestionLinks) {
+        const normalized = {
+          ...link,
+          user_id: user.uid,
+          household_id: householdId,
+          shared_to_household: Boolean(link.shared_to_household),
+          updated_at: link.updated_at ?? new Date().toISOString(),
+          created_at: link.created_at ?? new Date().toISOString()
+        };
+
+        await setDoc(doc(firestore, 'linkReferences', normalized.id), normalized, { merge: true });
+        await db.linkReferences.put({
+          ...normalized,
+          sync_status: 'synced',
+          synced_at: new Date().toISOString()
+        });
+        uploadedLinks += 1;
+      }
+
+      await db.syncMutations
+        .where('entity')
+        .equals('projects')
+        .and((mutation) => candidateProjectIds.has(mutation.record_id))
+        .delete();
+      await db.syncMutations
+        .where('entity')
+        .equals('questions')
+        .and((mutation) => candidateQuestionIds.has(mutation.record_id))
+        .delete();
+      const candidateLinkIds = new Set(candidateQuestionLinks.map((link) => link.id));
+      await db.syncMutations
+        .where('entity')
+        .equals('linkReferences')
+        .and((mutation) => candidateLinkIds.has(mutation.record_id))
+        .delete();
+
+      setSyncDiagnosticsStatus(
+        `Project upload complete: ${uploadedProjects} projects, ${uploadedQuestions} questions, ${uploadedLinks} question links copied.`
+      );
+      await checkCloudProjectData();
+    } catch (error) {
+      setSyncDiagnosticsStatus(error instanceof Error ? `Project upload failed: ${error.message}` : 'Project upload failed.');
+    } finally {
+      setForceProjectUploadInFlight(false);
+    }
+  }
+
   return (
     <div className="space-y-4">
       <Card className="space-y-3">
@@ -628,6 +864,18 @@ export default function SettingsPage() {
             <p className="text-xs text-muted">Local unsynced journals</p>
             <p className="text-lg font-semibold">{localUnsyncedJournalCount ?? 0}</p>
           </div>
+          <div className="rounded-xl bg-surface p-3">
+            <p className="text-xs text-muted">Local projects</p>
+            <p className="text-lg font-semibold">{localProjectCount ?? 0}</p>
+          </div>
+          <div className="rounded-xl bg-surface p-3">
+            <p className="text-xs text-muted">Local questions</p>
+            <p className="text-lg font-semibold">{localQuestionCount ?? 0}</p>
+          </div>
+          <div className="rounded-xl bg-surface p-3">
+            <p className="text-xs text-muted">Local question links</p>
+            <p className="text-lg font-semibold">{localQuestionLinkCount ?? 0}</p>
+          </div>
         </div>
 
         <div className="rounded-xl bg-surface p-3 text-xs text-muted">
@@ -648,6 +896,13 @@ export default function SettingsPage() {
             <span className="font-semibold text-ink">{cloudJournalCount ?? 'Not checked yet'}</span>
             {cloudJournalCheckedAt ? ` (checked ${new Date(cloudJournalCheckedAt).toLocaleString()})` : ''}
           </p>
+          <p className="mt-1">
+            Cloud projects/questions/links:{' '}
+            <span className="font-semibold text-ink">
+              {cloudProjectCount ?? 'N/A'} / {cloudQuestionCount ?? 'N/A'} / {cloudQuestionLinkCount ?? 'N/A'}
+            </span>
+            {cloudProjectCheckedAt ? ` (checked ${new Date(cloudProjectCheckedAt).toLocaleString()})` : ''}
+          </p>
         </div>
 
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -656,6 +911,25 @@ export default function SettingsPage() {
           </Button>
           <Button variant="secondary" onClick={() => void checkCloudJournalEntries()} disabled={cloudJournalCheckInFlight}>
             {cloudJournalCheckInFlight ? 'Checking cloud...' : 'Check cloud journals'}
+          </Button>
+          <Button variant="secondary" onClick={() => void checkCloudProjectData()} disabled={cloudProjectCheckInFlight}>
+            {cloudProjectCheckInFlight ? 'Checking project cloud...' : 'Check cloud projects'}
+          </Button>
+          <Button
+            variant="secondary"
+            className="sm:col-span-2"
+            onClick={() => void forceUploadLocalJournalEntries()}
+            disabled={forceUploadInFlight}
+          >
+            {forceUploadInFlight ? 'Uploading journals...' : 'Force upload local journals'}
+          </Button>
+          <Button
+            variant="secondary"
+            className="sm:col-span-2"
+            onClick={() => void forceUploadLocalProjectData()}
+            disabled={forceProjectUploadInFlight}
+          >
+            {forceProjectUploadInFlight ? 'Uploading projects...' : 'Force upload local projects'}
           </Button>
         </div>
 
