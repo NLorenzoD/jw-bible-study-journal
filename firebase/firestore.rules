@@ -1,0 +1,101 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function memberDocPath(householdId, uid) {
+      return /databases/$(database)/documents/householdMembers/$(householdId + '_' + uid);
+    }
+
+    function isHouseholdMember(householdId) {
+      return signedIn() && exists(memberDocPath(householdId, request.auth.uid));
+    }
+
+    function isHouseholdOwner(householdId) {
+      return isHouseholdMember(householdId) && get(memberDocPath(householdId, request.auth.uid)).data.role == 'owner';
+    }
+
+    match /profiles/{userId} {
+      allow read, write: if signedIn() && userId == request.auth.uid;
+    }
+
+    match /households/{householdId} {
+      allow read: if isHouseholdMember(householdId);
+      allow create: if signedIn() && request.resource.data.created_by == request.auth.uid;
+      allow update, delete: if isHouseholdOwner(householdId);
+    }
+
+    match /householdMembers/{memberId} {
+      allow read: if signedIn() && (
+        resource.data.user_id == request.auth.uid ||
+        isHouseholdMember(resource.data.household_id)
+      );
+
+      allow create: if signedIn() && (
+        request.resource.data.user_id == request.auth.uid ||
+        isHouseholdOwner(request.resource.data.household_id)
+      );
+
+      allow update, delete: if signedIn() && (
+        resource.data.user_id == request.auth.uid ||
+        isHouseholdOwner(resource.data.household_id)
+      );
+    }
+
+    match /householdInvites/{token} {
+      allow read: if signedIn() && isHouseholdMember(resource.data.household_id);
+      allow create: if signedIn() && isHouseholdOwner(request.resource.data.household_id);
+      allow update, delete: if signedIn() && isHouseholdOwner(resource.data.household_id);
+    }
+
+    match /readingSessions/{sessionId} {
+      allow read: if signedIn() && isHouseholdMember(resource.data.household_id);
+      allow create, update: if signedIn() &&
+        request.resource.data.user_id == request.auth.uid &&
+        isHouseholdMember(request.resource.data.household_id);
+      allow delete: if signedIn() &&
+        resource.data.user_id == request.auth.uid &&
+        isHouseholdMember(resource.data.household_id);
+    }
+
+    match /journalEntries/{entryId} {
+      allow read, write: if signedIn() && resource.data.user_id == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.user_id == request.auth.uid;
+    }
+
+    match /studyProjects/{projectId} {
+      allow read, write: if signedIn() && resource.data.user_id == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.user_id == request.auth.uid;
+    }
+
+    match /studyQuestions/{questionId} {
+      allow read, write: if signedIn() && resource.data.user_id == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.user_id == request.auth.uid;
+    }
+
+    match /highlights/{highlightId} {
+      allow read: if signedIn() && (
+        resource.data.user_id == request.auth.uid ||
+        (resource.data.shared_to_household == true && isHouseholdMember(resource.data.household_id))
+      );
+      allow create: if signedIn() && request.resource.data.user_id == request.auth.uid;
+      allow update, delete: if signedIn() && resource.data.user_id == request.auth.uid;
+    }
+
+    match /linkReferences/{linkId} {
+      allow read: if signedIn() && (
+        resource.data.user_id == request.auth.uid ||
+        (resource.data.shared_to_household == true && isHouseholdMember(resource.data.household_id))
+      );
+      allow create: if signedIn() && request.resource.data.user_id == request.auth.uid;
+      allow update, delete: if signedIn() && resource.data.user_id == request.auth.uid;
+    }
+
+    match /reminderSettings/{settingId} {
+      allow read, write: if signedIn() && resource.data.user_id == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.user_id == request.auth.uid;
+    }
+  }
+}

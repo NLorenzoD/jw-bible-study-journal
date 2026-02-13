@@ -1,0 +1,53 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: 40 26% 94%;
+  --surface: 37 30% 97%;
+  --card: 39 24% 100%;
+  --ink: 154 26% 14%;
+  --muted: 149 10% 45%;
+  --accent: 154 42% 33%;
+  --accent-strong: 154 55% 28%;
+  --success: 143 42% 42%;
+  --warning: 32 76% 55%;
+}
+
+.dark {
+  --bg: 167 28% 9%;
+  --surface: 167 22% 12%;
+  --card: 168 20% 15%;
+  --ink: 39 32% 95%;
+  --muted: 160 10% 64%;
+  --accent: 156 42% 56%;
+  --accent-strong: 160 45% 62%;
+  --success: 148 47% 52%;
+  --warning: 34 85% 58%;
+}
+
+* {
+  border-color: hsl(var(--muted) / 0.2);
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  color: hsl(var(--ink));
+  background:
+    radial-gradient(120% 140% at -8% -12%, hsl(var(--accent) / 0.16), transparent 44%),
+    radial-gradient(120% 140% at 110% -8%, hsl(var(--warning) / 0.08), transparent 40%),
+    hsl(var(--bg));
+}
+
+::selection {
+  background: hsl(var(--accent) / 0.3);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}

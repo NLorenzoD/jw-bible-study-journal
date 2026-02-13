@@ -1,0 +1,21 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "highlights",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "household_id", "order": "ASCENDING" },
+        { "fieldPath": "shared_to_household", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "linkReferences",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "household_id", "order": "ASCENDING" },
+        { "fieldPath": "shared_to_household", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

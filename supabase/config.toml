@@ -1,0 +1,4 @@
+project_id = "bible-study-journal"
+
+[functions.fetch-link-metadata]
+verify_jwt = true
