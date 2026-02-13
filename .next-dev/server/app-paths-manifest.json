@@ -1,0 +1,5 @@
+{
+  "/today/page": "app/today/page.js",
+  "/highlights/page": "app/highlights/page.js",
+  "/progress/page": "app/progress/page.js"
+}
