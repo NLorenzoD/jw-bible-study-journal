@@ -18,9 +18,13 @@ export interface ReadingSession extends LocalEntity {
   user_id: UUID;
   household_id: UUID;
   session_at: string;
+  duration_minutes?: number;
   book: string;
+  end_book?: string;
   chapter_start: number;
   chapter_end: number;
+  verse_start?: number;
+  verse_end?: number;
   verse_range?: string;
   note?: string;
 }

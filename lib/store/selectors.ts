@@ -1,5 +1,5 @@
 import { db } from '@/lib/store/db';
-import { BIBLE_BOOKS } from '@/lib/constants/bible';
+import { BIBLE_BOOKS, BIBLE_STRUCTURE, countChaptersInRange, getBookIndex } from '@/lib/constants/bible';
 import { toLocalDate } from '@/lib/utils/date';
 
 function countBackwardStreak(days: Set<string>) {
@@ -12,6 +12,27 @@ function countBackwardStreak(days: Set<string>) {
   }
 
   return streak;
+}
+
+function getSessionChapterCount(entry: {
+  book: string;
+  end_book?: string;
+  chapter_start: number;
+  chapter_end: number;
+  verse_start?: number;
+  verse_end?: number;
+}) {
+  const start = {
+    book: entry.book,
+    chapter: entry.chapter_start,
+    verse: entry.verse_start ?? 1
+  };
+  const end = {
+    book: entry.end_book ?? entry.book,
+    chapter: entry.chapter_end,
+    verse: entry.verse_end ?? 1
+  };
+  return countChaptersInRange(start, end);
 }
 
 export async function getStreaks(userId: string) {
@@ -55,7 +76,7 @@ export async function getWeeklySnapshot(userId: string) {
   };
 
   return {
-    chapters: reading.filter((entry) => inRange(entry.session_at)).reduce((sum, entry) => sum + (entry.chapter_end - entry.chapter_start + 1), 0),
+    chapters: reading.filter((entry) => inRange(entry.session_at)).reduce((sum, entry) => sum + getSessionChapterCount(entry), 0),
     journals: journals.filter((entry) => inRange(entry.entry_date)).length,
     highlights: highlights.filter((entry) => inRange(entry.updated_at)).length
   };
@@ -67,11 +88,30 @@ export async function getBibleProgress(userId: string) {
   const completionMap = new Map<string, Set<number>>();
 
   for (const session of sessions) {
-    const chapters = completionMap.get(session.book) ?? new Set<number>();
-    for (let chapter = session.chapter_start; chapter <= session.chapter_end; chapter += 1) {
-      chapters.add(chapter);
+    const startBookIndex = getBookIndex(session.book);
+    const endBookName = session.end_book ?? session.book;
+    const endBookIndex = getBookIndex(endBookName);
+
+    if (startBookIndex < 0 || endBookIndex < 0 || endBookIndex < startBookIndex) {
+      continue;
     }
-    completionMap.set(session.book, chapters);
+
+    for (let bookIndex = startBookIndex; bookIndex <= endBookIndex; bookIndex += 1) {
+      const book = BIBLE_STRUCTURE[bookIndex];
+      if (!book) {
+        continue;
+      }
+
+      const chapterStart = bookIndex === startBookIndex ? session.chapter_start : 1;
+      const chapterEnd = bookIndex === endBookIndex ? session.chapter_end : book.chapters.length;
+      const chapters = completionMap.get(book.book) ?? new Set<number>();
+
+      for (let chapter = chapterStart; chapter <= chapterEnd; chapter += 1) {
+        chapters.add(chapter);
+      }
+
+      completionMap.set(book.book, chapters);
+    }
   }
 
   return BIBLE_BOOKS.map((book) => {
@@ -122,11 +162,11 @@ export async function getStats(userId: string) {
     chaptersPerWeek:
       reading
         .filter((entry) => new Date(entry.session_at) >= weekAgo)
-        .reduce((sum, entry) => sum + (entry.chapter_end - entry.chapter_start + 1), 0) / 7,
+        .reduce((sum, entry) => sum + getSessionChapterCount(entry), 0) / 7,
     chaptersPerMonth:
       reading
         .filter((entry) => new Date(entry.session_at) >= monthAgo)
-        .reduce((sum, entry) => sum + (entry.chapter_end - entry.chapter_start + 1), 0) / 30,
+        .reduce((sum, entry) => sum + getSessionChapterCount(entry), 0) / 30,
     journalsPerWeek: journals.filter((entry) => new Date(entry.entry_date) >= weekAgo).length / 7,
     journalsPerMonth: journals.filter((entry) => new Date(entry.entry_date) >= monthAgo).length / 30,
     highlightsPerWeek: highlights.filter((entry) => new Date(entry.updated_at) >= weekAgo).length / 7,

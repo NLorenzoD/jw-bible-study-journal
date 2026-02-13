@@ -5,11 +5,22 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { useMemo, useState } from 'react';
 
 import { Card } from '@/components/shared/card';
+import { getBookIndex } from '@/lib/constants/bible';
 import { useUserContext } from '@/lib/hooks/useUserContext';
 import { db } from '@/lib/store/db';
 import { getBibleProgress, getStats, getStreaks } from '@/lib/store/selectors';
 
 const milestones = [7, 14, 30, 100];
+
+function sessionCoversBook(session: { book: string; end_book?: string }, bookName: string) {
+  const start = getBookIndex(session.book);
+  const end = getBookIndex(session.end_book ?? session.book);
+  const target = getBookIndex(bookName);
+  if (start < 0 || end < 0 || target < 0) {
+    return false;
+  }
+  return target >= start && target <= end;
+}
 
 export default function ProgressPage() {
   const { userId } = useUserContext();
@@ -24,12 +35,23 @@ export default function ProgressPage() {
       return [];
     }
 
-    return db.readingSessions.where('user_id').equals(userId).and((entry) => entry.book === selectedBook).reverse().sortBy('session_at');
+    const sessions = await db.readingSessions.where('user_id').equals(userId).toArray();
+    return sessions
+      .filter((entry) => sessionCoversBook(entry, selectedBook))
+      .sort((left, right) => right.session_at.localeCompare(left.session_at));
   }, [selectedBook, userId]);
 
   const achievedMilestones = useMemo(
     () => milestones.filter((target) => (streaks?.consistencyStreak ?? 0) >= target),
     [streaks?.consistencyStreak]
+  );
+  const sessionDateFormatter = useMemo(
+    () =>
+      new Intl.DateTimeFormat(undefined, {
+        dateStyle: 'medium',
+        timeStyle: 'short'
+      }),
+    []
   );
 
   return (
@@ -101,10 +123,20 @@ export default function ProgressPage() {
           <div className="space-y-2 text-sm">
             {(bookSessions ?? []).slice(0, 12).map((session) => (
               <div key={session.id} className="rounded-xl bg-surface p-3">
+                <p className="text-xs text-muted">{sessionDateFormatter.format(new Date(session.session_at))}</p>
                 <p>
-                  Chapter {session.chapter_start}
-                  {session.chapter_start !== session.chapter_end ? `-${session.chapter_end}` : ''}
+                  {(session.end_book ?? session.book) !== session.book
+                    ? `${session.book} ${session.chapter_start}:${session.verse_start ?? 1} - ${session.end_book ?? session.book} ${session.chapter_end}:${
+                        session.verse_end ?? session.verse_start ?? 1
+                      }`
+                    : `Ch ${session.chapter_start}:${session.verse_start ?? 1}${
+                        session.chapter_start !== session.chapter_end ||
+                        (session.verse_end ?? session.verse_start ?? 1) !== (session.verse_start ?? 1)
+                          ? ` - ${session.chapter_end}:${session.verse_end ?? session.verse_start ?? 1}`
+                          : ''
+                      }`}
                 </p>
+                {session.duration_minutes ? <p className="mt-1 text-xs text-muted">{session.duration_minutes} min</p> : null}
                 {session.note && <p className="mt-1 text-muted">{session.note}</p>}
               </div>
             ))}

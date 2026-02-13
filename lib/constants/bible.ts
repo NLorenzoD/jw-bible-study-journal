@@ -1,72 +1,112 @@
-export const BIBLE_BOOKS: Array<{ name: string; chapters: number }> = [
-  { name: 'Genesis', chapters: 50 },
-  { name: 'Exodus', chapters: 40 },
-  { name: 'Leviticus', chapters: 27 },
-  { name: 'Numbers', chapters: 36 },
-  { name: 'Deuteronomy', chapters: 34 },
-  { name: 'Joshua', chapters: 24 },
-  { name: 'Judges', chapters: 21 },
-  { name: 'Ruth', chapters: 4 },
-  { name: '1 Samuel', chapters: 31 },
-  { name: '2 Samuel', chapters: 24 },
-  { name: '1 Kings', chapters: 22 },
-  { name: '2 Kings', chapters: 25 },
-  { name: '1 Chronicles', chapters: 29 },
-  { name: '2 Chronicles', chapters: 36 },
-  { name: 'Ezra', chapters: 10 },
-  { name: 'Nehemiah', chapters: 13 },
-  { name: 'Esther', chapters: 10 },
-  { name: 'Job', chapters: 42 },
-  { name: 'Psalms', chapters: 150 },
-  { name: 'Proverbs', chapters: 31 },
-  { name: 'Ecclesiastes', chapters: 12 },
-  { name: 'Song of Solomon', chapters: 8 },
-  { name: 'Isaiah', chapters: 66 },
-  { name: 'Jeremiah', chapters: 52 },
-  { name: 'Lamentations', chapters: 5 },
-  { name: 'Ezekiel', chapters: 48 },
-  { name: 'Daniel', chapters: 12 },
-  { name: 'Hosea', chapters: 14 },
-  { name: 'Joel', chapters: 3 },
-  { name: 'Amos', chapters: 9 },
-  { name: 'Obadiah', chapters: 1 },
-  { name: 'Jonah', chapters: 4 },
-  { name: 'Micah', chapters: 7 },
-  { name: 'Nahum', chapters: 3 },
-  { name: 'Habakkuk', chapters: 3 },
-  { name: 'Zephaniah', chapters: 3 },
-  { name: 'Haggai', chapters: 2 },
-  { name: 'Zechariah', chapters: 14 },
-  { name: 'Malachi', chapters: 4 },
-  { name: 'Matthew', chapters: 28 },
-  { name: 'Mark', chapters: 16 },
-  { name: 'Luke', chapters: 24 },
-  { name: 'John', chapters: 21 },
-  { name: 'Acts', chapters: 28 },
-  { name: 'Romans', chapters: 16 },
-  { name: '1 Corinthians', chapters: 16 },
-  { name: '2 Corinthians', chapters: 13 },
-  { name: 'Galatians', chapters: 6 },
-  { name: 'Ephesians', chapters: 6 },
-  { name: 'Philippians', chapters: 4 },
-  { name: 'Colossians', chapters: 4 },
-  { name: '1 Thessalonians', chapters: 5 },
-  { name: '2 Thessalonians', chapters: 3 },
-  { name: '1 Timothy', chapters: 6 },
-  { name: '2 Timothy', chapters: 4 },
-  { name: 'Titus', chapters: 3 },
-  { name: 'Philemon', chapters: 1 },
-  { name: 'Hebrews', chapters: 13 },
-  { name: 'James', chapters: 5 },
-  { name: '1 Peter', chapters: 5 },
-  { name: '2 Peter', chapters: 3 },
-  { name: '1 John', chapters: 5 },
-  { name: '2 John', chapters: 1 },
-  { name: '3 John', chapters: 1 },
-  { name: 'Jude', chapters: 1 },
-  { name: 'Revelation', chapters: 22 }
-];
+import bibleStructure from '@/lib/constants/bible-structure.json';
+
+export interface BibleBookStructure {
+  book: string;
+  chapters: number[];
+}
+
+export interface ScriptureReference {
+  book: string;
+  chapter: number;
+  verse: number;
+}
+
+export const BIBLE_STRUCTURE = bibleStructure as BibleBookStructure[];
+
+export const BIBLE_BOOKS: Array<{ name: string; chapters: number }> = BIBLE_STRUCTURE.map((entry) => ({
+  name: entry.book,
+  chapters: entry.chapters.length
+}));
 
 export function getBook(name: string) {
   return BIBLE_BOOKS.find((book) => book.name === name);
+}
+
+export function getBookStructure(name: string) {
+  return BIBLE_STRUCTURE.find((book) => book.book === name);
+}
+
+export function getChapterVerseCount(bookName: string, chapterNumber: number) {
+  const structure = getBookStructure(bookName);
+  if (!structure || chapterNumber < 1 || chapterNumber > structure.chapters.length) {
+    return 1;
+  }
+  return structure.chapters[chapterNumber - 1];
+}
+
+export function getBookIndex(bookName: string) {
+  return BIBLE_STRUCTURE.findIndex((book) => book.book === bookName);
+}
+
+export function compareReferences(left: ScriptureReference, right: ScriptureReference) {
+  const leftBookIndex = getBookIndex(left.book);
+  const rightBookIndex = getBookIndex(right.book);
+
+  if (leftBookIndex !== rightBookIndex) {
+    return leftBookIndex - rightBookIndex;
+  }
+
+  if (left.chapter !== right.chapter) {
+    return left.chapter - right.chapter;
+  }
+
+  return left.verse - right.verse;
+}
+
+export function getNextReference(reference: ScriptureReference) {
+  const versesInChapter = getChapterVerseCount(reference.book, reference.chapter);
+  if (reference.verse < versesInChapter) {
+    return { ...reference, verse: reference.verse + 1 };
+  }
+
+  const currentBook = getBookStructure(reference.book);
+  if (currentBook && reference.chapter < currentBook.chapters.length) {
+    return { ...reference, chapter: reference.chapter + 1, verse: 1 };
+  }
+
+  const currentBookIndex = getBookIndex(reference.book);
+  const nextBook = BIBLE_STRUCTURE[currentBookIndex + 1];
+  if (!nextBook) {
+    return reference;
+  }
+
+  return { book: nextBook.book, chapter: 1, verse: 1 };
+}
+
+export function countChaptersInRange(start: ScriptureReference, end: ScriptureReference) {
+  if (compareReferences(start, end) > 0) {
+    return 0;
+  }
+
+  const startBookIndex = getBookIndex(start.book);
+  const endBookIndex = getBookIndex(end.book);
+  if (startBookIndex < 0 || endBookIndex < 0) {
+    return 0;
+  }
+
+  if (startBookIndex === endBookIndex) {
+    return end.chapter - start.chapter + 1;
+  }
+
+  let total = 0;
+  for (let index = startBookIndex; index <= endBookIndex; index += 1) {
+    const book = BIBLE_STRUCTURE[index];
+    if (!book) {
+      continue;
+    }
+
+    if (index === startBookIndex) {
+      total += book.chapters.length - start.chapter + 1;
+      continue;
+    }
+
+    if (index === endBookIndex) {
+      total += end.chapter;
+      continue;
+    }
+
+    total += book.chapters.length;
+  }
+
+  return total;
 }
