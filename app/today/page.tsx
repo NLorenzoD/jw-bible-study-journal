@@ -9,6 +9,7 @@ import { Button } from '@/components/shared/button';
 import { Card } from '@/components/shared/card';
 import { CylindricalWheelPicker } from '@/components/shared/cylindrical-wheel-picker';
 import { Input, Select, Textarea } from '@/components/shared/inputs';
+import { TagInput } from '@/components/shared/tag-input';
 import {
   BIBLE_BOOKS,
   compareReferences,
@@ -38,6 +39,7 @@ const cardAnimation = {
 };
 
 const MAX_READING_BACKDATE_DAYS = 5;
+type ReadingStartMode = 'auto' | 'manual';
 
 function getReadingSessionBounds(now = new Date()) {
   const latest = new Date(now);
@@ -110,6 +112,60 @@ function buildDurationOptions() {
   return options;
 }
 
+function getIsoWeekParts(value: Date) {
+  const date = new Date(Date.UTC(value.getFullYear(), value.getMonth(), value.getDate()));
+  const day = date.getUTCDay() || 7;
+  date.setUTCDate(date.getUTCDate() + 4 - day);
+  const isoYear = date.getUTCFullYear();
+  const yearStart = new Date(Date.UTC(isoYear, 0, 1));
+  const week = Math.ceil((((date.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+  return { isoYear, week };
+}
+
+function buildClmmWorkbookUrl(value = new Date()) {
+  const { isoYear, week } = getIsoWeekParts(value);
+  return `https://wol.jw.org/en/wol/meetings/r1/lp-e/${isoYear}/${week}`;
+}
+
+function mergeTags(tags: string[], requiredTags: string[]) {
+  const existing = [...tags];
+  const seen = new Set(existing.map((tag) => tag.toLowerCase()));
+
+  for (const required of requiredTags) {
+    if (seen.has(required.toLowerCase())) {
+      continue;
+    }
+    existing.push(required);
+    seen.add(required.toLowerCase());
+  }
+  return existing;
+}
+
+function mergeLinks(raw: string, url: string) {
+  const existing = raw
+    .split(/\s+/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  const normalized = existing.map((entry) => entry.toLowerCase());
+  if (!normalized.includes(url.toLowerCase())) {
+    existing.unshift(url);
+  }
+  return existing.join(' ');
+}
+
+function removeTags(tags: string[], tagsToRemove: string[]) {
+  const blocked = new Set(tagsToRemove.map((tag) => tag.toLowerCase()));
+  return tags.filter((tag) => tag && !blocked.has(tag.toLowerCase()));
+}
+
+function removeLink(raw: string, url: string) {
+  return raw
+    .split(/\s+/)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry && entry.toLowerCase() !== url.toLowerCase())
+    .join(' ');
+}
+
 export default function TodayPage() {
   const { userId, householdId } = useUserContext();
   const now = new Date();
@@ -127,6 +183,60 @@ export default function TodayPage() {
     const sorted = sessions.sort((left, right) => right.session_at.localeCompare(left.session_at));
     return sorted[0] ?? null;
   }, [userId], null);
+  const tagSuggestions = useLiveQuery(async () => {
+    const [catalogTags, highlights, journals] = await Promise.all([
+      db.userTags.where('user_id').equals(userId).toArray(),
+      db.highlights.where('user_id').equals(userId).toArray(),
+      db.journalEntries.where('user_id').equals(userId).toArray()
+    ]);
+    const unique = new Map<string, string>();
+
+    for (const entry of catalogTags) {
+      const normalized = entry.tag.trim();
+      if (!normalized) {
+        continue;
+      }
+      const key = normalized.toLowerCase();
+      if (!unique.has(key)) {
+        unique.set(key, normalized);
+      }
+    }
+
+    for (const highlight of highlights) {
+      for (const tag of highlight.tags) {
+        const normalized = tag.trim();
+        if (!normalized) {
+          continue;
+        }
+        const key = normalized.toLowerCase();
+        if (!unique.has(key)) {
+          unique.set(key, normalized);
+        }
+      }
+    }
+
+    for (const journal of journals) {
+      for (const tag of journal.tags) {
+        const normalized = tag.trim();
+        if (!normalized) {
+          continue;
+        }
+        const key = normalized.toLowerCase();
+        if (!unique.has(key)) {
+          unique.set(key, normalized);
+        }
+      }
+    }
+
+    return [...unique.values()].sort((left, right) => left.localeCompare(right));
+  }, [userId], []);
+
+  const [startMode, setStartMode] = useState<ReadingStartMode>('auto');
+  const [manualStart, setManualStart] = useState({
+    book: 'Genesis',
+    chapter: 1,
+    verse: 1
+  });
 
   const [readingForm, setReadingForm] = useState({
     endBook: 'Genesis',
@@ -140,12 +250,13 @@ export default function TodayPage() {
   });
 
   const [journalBody, setJournalBody] = useState('');
-  const [journalTags, setJournalTags] = useState('');
+  const [journalTags, setJournalTags] = useState<string[]>([]);
 
   const [highlightReference, setHighlightReference] = useState('');
   const [highlightSummary, setHighlightSummary] = useState('');
-  const [highlightTags, setHighlightTags] = useState('');
+  const [highlightTags, setHighlightTags] = useState<string[]>([]);
   const [highlightLinks, setHighlightLinks] = useState('');
+  const [highlightType, setHighlightType] = useState<'clmm' | 'personal'>('clmm');
 
   const [selectedProjectId, setSelectedProjectId] = useState('__new__');
   const [newProjectTitle, setNewProjectTitle] = useState('');
@@ -155,11 +266,13 @@ export default function TodayPage() {
   const weeklySnapshot = useLiveQuery(() => (showSnapshot ? getWeeklySnapshot(userId) : Promise.resolve(null)), [showSnapshot, userId]);
 
   const [status, setStatus] = useState<{ tone: 'success' | 'error'; message: string } | null>(null);
+  const [isSavingHighlight, setIsSavingHighlight] = useState(false);
   const [isTimePickerOpen, setIsTimePickerOpen] = useState(false);
   const [isDurationPickerOpen, setIsDurationPickerOpen] = useState(false);
   const dateTimePickerRef = useRef<HTMLDivElement | null>(null);
   const durationPickerRef = useRef<HTMLDivElement | null>(null);
   const lastAppliedStartRef = useRef<string | null>(null);
+  const highlightSubmitLockRef = useRef(false);
 
   const startReference = useMemo(() => {
     if (!latestReadingSession) {
@@ -173,6 +286,37 @@ export default function TodayPage() {
     };
     return getNextReference(lastEnd);
   }, [latestReadingSession]);
+
+  const activeStartReference = startMode === 'auto' ? startReference : manualStart;
+  const activeStartKey = `${activeStartReference.book}:${activeStartReference.chapter}:${activeStartReference.verse}`;
+  const activeStartBookIndex = getBookIndex(activeStartReference.book);
+  const currentClmmWorkbookUrl = useMemo(() => buildClmmWorkbookUrl(), []);
+  const clmmWeekLabel = useMemo(() => {
+    const { isoYear, week } = getIsoWeekParts(new Date());
+    return `Week ${week}, ${isoYear}`;
+  }, []);
+
+  function activateClmmHighlightType() {
+    const workbookUrl = buildClmmWorkbookUrl();
+    setHighlightType('clmm');
+    setHighlightTags((prev) => mergeTags(prev, ['gems', 'clmm']));
+    setHighlightLinks((prev) => mergeLinks(prev, workbookUrl));
+
+    const opened = window.open(workbookUrl, '_blank', 'noopener,noreferrer');
+    if (!opened) {
+      setStatus({
+        tone: 'error',
+        message: 'Browser popup blocked. Use the "Open this week workbook" button below.'
+      });
+    }
+  }
+
+  function activatePersonalHighlightType() {
+    const workbookUrl = buildClmmWorkbookUrl();
+    setHighlightType('personal');
+    setHighlightTags((prev) => removeTags(prev, ['gems', 'clmm']));
+    setHighlightLinks((prev) => removeLink(prev, workbookUrl));
+  }
 
   useEffect(() => {
     const key = `${startReference.book}:${startReference.chapter}:${startReference.verse}`;
@@ -214,19 +358,18 @@ export default function TodayPage() {
     return () => window.removeEventListener('click', onWindowClick);
   }, [isDurationPickerOpen, isTimePickerOpen]);
 
-  const startBookStructure = useMemo(() => getBookStructure(startReference.book), [startReference.book]);
-  const startBookIndex = getBookIndex(startReference.book);
+  const startBookStructure = useMemo(() => getBookStructure(activeStartReference.book), [activeStartReference.book]);
   const endBookOptions = useMemo(
     () =>
-      BIBLE_BOOKS.slice(startBookIndex < 0 ? 0 : startBookIndex).map((book) => ({
+      BIBLE_BOOKS.slice(activeStartBookIndex < 0 ? 0 : activeStartBookIndex).map((book) => ({
         value: book.name,
         label: book.name
       })),
-    [startBookIndex]
+    [activeStartBookIndex]
   );
 
   const endBookStructure = useMemo(() => getBookStructure(readingForm.endBook), [readingForm.endBook]);
-  const endChapterMin = readingForm.endBook === startReference.book ? startReference.chapter : 1;
+  const endChapterMin = readingForm.endBook === activeStartReference.book ? activeStartReference.chapter : 1;
   const endChapterMax = endBookStructure?.chapters.length ?? 1;
   const endChapterOptions = useMemo(
     () =>
@@ -238,7 +381,9 @@ export default function TodayPage() {
   );
 
   const endVerseMin =
-    readingForm.endBook === startReference.book && readingForm.endChapter === startReference.chapter ? startReference.verse : 1;
+    readingForm.endBook === activeStartReference.book && readingForm.endChapter === activeStartReference.chapter
+      ? activeStartReference.verse
+      : 1;
   const endVerseMax = getChapterVerseCount(readingForm.endBook, readingForm.endChapter);
   const endVerseOptions = useMemo(
     () =>
@@ -263,12 +408,38 @@ export default function TodayPage() {
   );
   const startVerseOptions = useMemo(
     () =>
-      rangeOptions(1, getChapterVerseCount(startReference.book, startReference.chapter)).map((verse) => ({
+      rangeOptions(1, getChapterVerseCount(activeStartReference.book, activeStartReference.chapter)).map((verse) => ({
         value: verse.toString(),
         label: `V ${verse}`
       })),
-    [startReference.book, startReference.chapter]
+    [activeStartReference.book, activeStartReference.chapter]
   );
+
+  useEffect(() => {
+    setReadingForm((prev) => {
+      const prevBookIndex = getBookIndex(prev.endBook);
+      const nextBook = prevBookIndex < activeStartBookIndex ? activeStartReference.book : prev.endBook;
+      const nextBookStructure = getBookStructure(nextBook);
+      const nextChapterMin = nextBook === activeStartReference.book ? activeStartReference.chapter : 1;
+      const nextChapterMax = nextBookStructure?.chapters.length ?? 1;
+      const nextChapter = Math.min(Math.max(prev.endChapter, nextChapterMin), nextChapterMax);
+      const nextVerseMin =
+        nextBook === activeStartReference.book && nextChapter === activeStartReference.chapter ? activeStartReference.verse : 1;
+      const nextVerseMax = getChapterVerseCount(nextBook, nextChapter);
+      const nextVerse = Math.min(Math.max(prev.endVerse, nextVerseMin), nextVerseMax);
+
+      if (nextBook === prev.endBook && nextChapter === prev.endChapter && nextVerse === prev.endVerse) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        endBook: nextBook,
+        endChapter: nextChapter,
+        endVerse: nextVerse
+      };
+    });
+  }, [activeStartBookIndex, activeStartKey, activeStartReference.book, activeStartReference.chapter, activeStartReference.verse]);
 
   const hourOptions = useMemo(
     () => rangeOptions(0, 23).map((hour) => ({ value: `${hour}`, label: pad2(hour) })),
@@ -339,8 +510,14 @@ export default function TodayPage() {
       verse: Number(readingForm.endVerse)
     };
 
-    if (compareReferences(endReference, startReference) < 0) {
-      setStatus({ tone: 'error', message: 'End reference cannot be before the automatic start reference.' });
+    if (compareReferences(endReference, activeStartReference) < 0) {
+      setStatus({
+        tone: 'error',
+        message:
+          startMode === 'auto'
+            ? 'End reference cannot be before the automatic start reference.'
+            : 'End reference cannot be before your selected start reference.'
+      });
       return;
     }
 
@@ -362,17 +539,17 @@ export default function TodayPage() {
       user_id: userId,
       household_id: householdId,
       session_at: selectedSessionDate.toISOString(),
-      book: startReference.book,
+      book: activeStartReference.book,
       end_book: endReference.book,
-      chapter_start: startReference.chapter,
+      chapter_start: activeStartReference.chapter,
       chapter_end: endReference.chapter,
-      verse_start: startReference.verse,
+      verse_start: activeStartReference.verse,
       verse_end: endReference.verse,
       duration_minutes: parsedDuration,
       verse_range:
-        startReference.book === endReference.book
-          ? `${startReference.chapter}:${startReference.verse}-${endReference.chapter}:${endReference.verse}`
-          : `${startReference.book} ${startReference.chapter}:${startReference.verse}-${endReference.book} ${endReference.chapter}:${endReference.verse}`,
+        activeStartReference.book === endReference.book
+          ? `${activeStartReference.chapter}:${activeStartReference.verse}-${endReference.chapter}:${endReference.verse}`
+          : `${activeStartReference.book} ${activeStartReference.chapter}:${activeStartReference.verse}-${endReference.book} ${endReference.chapter}:${endReference.verse}`,
       note: readingForm.note || undefined
     });
 
@@ -400,70 +577,82 @@ export default function TodayPage() {
       household_id: householdId,
       entry_date: new Date().toISOString(),
       body: journalBody.trim(),
-      tags: journalTags
-        .split(',')
-        .map((tag) => tag.trim())
-        .filter(Boolean),
+      tags: journalTags.map((tag) => tag.trim()).filter(Boolean),
       conflict_of: null,
       is_conflict_copy: false
     });
 
     setJournalBody('');
-    setJournalTags('');
+    setJournalTags([]);
     setStatus({ tone: 'success', message: 'Journal entry saved' });
   }
 
   async function onSubmitHighlight(event: FormEvent) {
     event.preventDefault();
 
+    if (highlightSubmitLockRef.current || isSavingHighlight) {
+      return;
+    }
+
     if (!highlightReference.trim() || !highlightSummary.trim()) {
       return;
     }
 
-    const highlightId = createId();
+    highlightSubmitLockRef.current = true;
+    setIsSavingHighlight(true);
 
-    await addHighlight({
-      id: highlightId,
-      user_id: userId,
-      household_id: householdId,
-      reference: highlightReference.trim(),
-      summary: highlightSummary.trim(),
-      tags: highlightTags
-        .split(',')
-        .map((tag) => tag.trim())
-        .filter(Boolean),
-      project_id: null,
-      shared_to_household: false
-    });
+    try {
+      const highlightId = createId();
+      const finalTags = highlightType === 'clmm' ? mergeTags(highlightTags, ['gems', 'clmm']) : highlightTags;
 
-    const links = highlightLinks
-      .split(/\s+/)
-      .map((url) => url.trim())
-      .filter(Boolean);
-
-    const metadataTasks = links.map(async (url) => {
-      const metadata = await fetchLinkMetadata(url);
-      await addLinkReference({
-        id: createId(),
+      await addHighlight({
+        id: highlightId,
         user_id: userId,
         household_id: householdId,
-        parent_type: 'highlight',
-        parent_id: highlightId,
-        shared_to_household: false,
-        url,
-        title: metadata?.title,
-        publication_name: metadata?.publication_name,
-        section_heading: metadata?.section_heading
+        reference: highlightReference.trim(),
+        summary: highlightSummary.trim(),
+        tags: finalTags.map((tag) => tag.trim()).filter(Boolean),
+        project_id: null,
+        shared_to_household: false
       });
-    });
 
-    await Promise.allSettled(metadataTasks);
+      const links = (highlightType === 'clmm' ? mergeLinks(highlightLinks, buildClmmWorkbookUrl()) : highlightLinks)
+        .split(/\s+/)
+        .map((url) => url.trim())
+        .filter(Boolean);
 
-    setHighlightReference('');
-    setHighlightSummary('');
-    setHighlightTags('');
-    setHighlightLinks('');
-    setStatus({ tone: 'success', message: 'Highlight saved (links captured with fallback)' });
+      // Do not block the save interaction on metadata enrichment.
+      const metadataTasks = links.map(async (url) => {
+        const metadata = await fetchLinkMetadata(url);
+        await addLinkReference({
+          id: createId(),
+          user_id: userId,
+          household_id: householdId,
+          parent_type: 'highlight',
+          parent_id: highlightId,
+          shared_to_household: false,
+          url,
+          title: metadata?.title,
+          publication_name: metadata?.publication_name,
+          section_heading: metadata?.section_heading
+        });
+      });
+      void Promise.allSettled(metadataTasks);
+
+      setHighlightReference('');
+      setHighlightSummary('');
+      setHighlightTags([]);
+      setHighlightLinks('');
+      setStatus({
+        tone: 'success',
+        message: links.length ? 'Highlight saved. Link details are syncing in the background.' : 'Highlight saved'
+      });
+    } catch {
+      setStatus({ tone: 'error', message: 'Could not save highlight. Please try again.' });
+    } finally {
+      setIsSavingHighlight(false);
+      highlightSubmitLockRef.current = false;
+    }
   }
 
   async function onSubmitProjectQuestion(event: FormEvent) {
@@ -534,27 +723,99 @@ export default function TodayPage() {
         <Card className="space-y-3">
           <h2 className="font-display text-2xl">Log Reading Session</h2>
           <form className="space-y-3" onSubmit={onSubmitReading}>
-            <p className="text-xs text-muted">Start is set from your last reading checkpoint. Scroll only the end wheels.</p>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setStartMode('auto')}
+                className={cn(
+                  'rounded-xl border px-3 py-2 text-sm font-semibold transition',
+                  startMode === 'auto'
+                    ? 'border-accent bg-accent/10 text-ink shadow-glow'
+                    : 'border-muted/20 bg-surface text-muted hover:border-accent/30'
+                )}
+              >
+                Auto Resume
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setManualStart((current) =>
+                    current.book === 'Genesis' && current.chapter === 1 && current.verse === 1 ? startReference : current
+                  );
+                  setStartMode('manual');
+                }}
+                className={cn(
+                  'rounded-xl border px-3 py-2 text-sm font-semibold transition',
+                  startMode === 'manual'
+                    ? 'border-accent bg-accent/10 text-ink shadow-glow'
+                    : 'border-muted/20 bg-surface text-muted hover:border-accent/30'
+                )}
+              >
+                New Location
+              </button>
+            </div>
+            <p className="text-xs text-muted">
+              {startMode === 'auto'
+                ? 'Start is set from your last reading checkpoint. Scroll only the end wheels.'
+                : 'Choose a new starting location, then set where this reading ends.'}
+            </p>
+            <p className="text-xs text-muted">Tip: tap a wheel to activate it. Swipe outside wheels to move the page.</p>
             <div className="space-y-2">
-              <p className="text-xs font-medium uppercase tracking-wide text-muted">Start (Auto)</p>
+              <p className="text-xs font-medium uppercase tracking-wide text-muted">
+                {startMode === 'auto' ? 'Start (Auto Resume)' : 'Start (New Location)'}
+              </p>
               <div className="grid grid-cols-3 gap-2">
                 <CylindricalWheelPicker
-                  disabled
+                  requireActivation
+                  disabled={startMode === 'auto'}
                   options={startBookOptions}
-                  value={startReference.book}
-                  onChange={() => undefined}
+                  value={activeStartReference.book}
+                  onChange={(nextBook) => {
+                    if (startMode === 'auto') {
+                      return;
+                    }
+                    const nextBookStructure = getBookStructure(nextBook);
+                    const nextChapterMax = nextBookStructure?.chapters.length ?? 1;
+                    const nextChapter = Math.min(manualStart.chapter, nextChapterMax);
+                    const nextVerseMax = getChapterVerseCount(nextBook, nextChapter);
+                    const nextVerse = Math.min(manualStart.verse, nextVerseMax);
+                    setManualStart({
+                      book: nextBook,
+                      chapter: nextChapter,
+                      verse: nextVerse
+                    });
+                  }}
                 />
                 <CylindricalWheelPicker
-                  disabled
+                  requireActivation
+                  disabled={startMode === 'auto'}
                   options={startChapterOptions}
-                  value={startReference.chapter.toString()}
-                  onChange={() => undefined}
+                  value={activeStartReference.chapter.toString()}
+                  onChange={(nextChapterValue) => {
+                    if (startMode === 'auto') {
+                      return;
+                    }
+                    const nextChapter = Number(nextChapterValue);
+                    const nextVerseMax = getChapterVerseCount(manualStart.book, nextChapter);
+                    const nextVerse = Math.min(manualStart.verse, nextVerseMax);
+                    setManualStart({
+                      ...manualStart,
+                      chapter: nextChapter,
+                      verse: nextVerse
+                    });
+                  }}
                 />
                 <CylindricalWheelPicker
-                  disabled
+                  requireActivation
+                  disabled={startMode === 'auto'}
                   options={startVerseOptions}
-                  value={startReference.verse.toString()}
-                  onChange={() => undefined}
+                  value={activeStartReference.verse.toString()}
+                  onChange={(nextVerseValue) => {
+                    if (startMode === 'auto') {
+                      return;
+                    }
+                    setManualStart({ ...manualStart, verse: Number(nextVerseValue) });
+                  }}
                 />
               </div>
             </div>
@@ -562,13 +823,17 @@ export default function TodayPage() {
               <p className="text-xs font-medium uppercase tracking-wide text-muted">End (Scroll to Select)</p>
               <div className="grid grid-cols-3 gap-2">
                 <CylindricalWheelPicker
+                  requireActivation
                   options={endBookOptions}
                   value={readingForm.endBook}
                   onChange={(nextBook) => {
-                    const nextMinChapter = nextBook === startReference.book ? startReference.chapter : 1;
+                    const nextMinChapter = nextBook === activeStartReference.book ? activeStartReference.chapter : 1;
                     const nextMaxChapter = getBookStructure(nextBook)?.chapters.length ?? 1;
                     const nextChapter = Math.min(Math.max(readingForm.endChapter, nextMinChapter), nextMaxChapter);
-                    const nextMinVerse = nextBook === startReference.book && nextChapter === startReference.chapter ? startReference.verse : 1;
+                    const nextMinVerse =
+                      nextBook === activeStartReference.book && nextChapter === activeStartReference.chapter
+                        ? activeStartReference.verse
+                        : 1;
                     const nextMaxVerse = getChapterVerseCount(nextBook, nextChapter);
                     const nextVerse = Math.min(Math.max(readingForm.endVerse, nextMinVerse), nextMaxVerse);
 
@@ -581,12 +846,15 @@ export default function TodayPage() {
                   }}
                 />
                 <CylindricalWheelPicker
+                  requireActivation
                   options={endChapterOptions}
                   value={readingForm.endChapter.toString()}
                   onChange={(nextChapterValue) => {
                     const nextChapter = Number(nextChapterValue);
                     const nextMinVerse =
-                      readingForm.endBook === startReference.book && nextChapter === startReference.chapter ? startReference.verse : 1;
+                      readingForm.endBook === activeStartReference.book && nextChapter === activeStartReference.chapter
+                        ? activeStartReference.verse
+                        : 1;
                     const nextMaxVerse = getChapterVerseCount(readingForm.endBook, nextChapter);
                     const nextVerse = Math.min(Math.max(readingForm.endVerse, nextMinVerse), nextMaxVerse);
                     setReadingForm({
@@ -597,6 +865,7 @@ export default function TodayPage() {
                   }}
                 />
                 <CylindricalWheelPicker
+                  requireActivation
                   options={endVerseOptions}
                   value={readingForm.endVerse.toString()}
                   onChange={(nextVerseValue) => setReadingForm({ ...readingForm, endVerse: Number(nextVerseValue) })}
@@ -739,22 +1008,64 @@ export default function TodayPage() {
               onChange={(event) => setJournalBody(event.target.value)}
               placeholder="Write private thoughts, prayers, or observations..."
             />
-            <Input
+            <TagInput
               value={journalTags}
-              onChange={(event) => setJournalTags(event.target.value)}
-              placeholder="Optional tags (comma separated)"
+              onChange={setJournalTags}
+              suggestions={tagSuggestions}
+              placeholder="Optional tags"
             />
             <Button type="submit" className="w-full">
               Save journal
             </Button>
+            <p className="text-xs text-muted">Review saved journals in Progress &gt; Journal History.</p>
           </form>
         </Card>
       </motion.div>
 
       <motion.div {...cardAnimation} transition={{ delay: 0.2 }}>
         <Card className="space-y-3">
-          <h2 className="font-display text-2xl">Add Highlight</h2>
+          <h2 className="font-display text-2xl">Add Bible Highlights</h2>
           <form className="space-y-3" onSubmit={onSubmitHighlight}>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={activateClmmHighlightType}
+                className={cn(
+                  'rounded-xl border px-3 py-2 text-sm font-semibold transition',
+                  highlightType === 'clmm'
+                    ? 'border-accent bg-accent/10 text-ink shadow-glow'
+                    : 'border-muted/20 bg-surface text-muted hover:border-accent/30'
+                )}
+              >
+                This Week&apos;s Spiritual Gems (CLMM)
+              </button>
+              <button
+                type="button"
+                onClick={activatePersonalHighlightType}
+                className={cn(
+                  'rounded-xl border px-3 py-2 text-sm font-semibold transition',
+                  highlightType === 'personal'
+                    ? 'border-accent bg-accent/10 text-ink shadow-glow'
+                    : 'border-muted/20 bg-surface text-muted hover:border-accent/30'
+                )}
+              >
+                Personal Bible Highlights
+              </button>
+            </div>
+            {highlightType === 'clmm' && (
+              <div className="rounded-xl border border-accent/25 bg-accent/10 p-3">
+                <p className="text-xs font-medium uppercase tracking-wide text-muted">This week workbook</p>
+                <p className="mt-1 text-xs text-muted">{clmmWeekLabel}</p>
+                <a
+                  href={currentClmmWorkbookUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-2 inline-flex rounded-lg border border-accent/35 bg-surface px-3 py-1.5 text-xs font-semibold text-ink transition hover:border-accent/60"
+                >
+                  Open this week workbook
+                </a>
+              </div>
+            )}
             <Input
               value={highlightReference}
               onChange={(event) => setHighlightReference(event.target.value)}
@@ -769,15 +1080,16 @@ export default function TodayPage() {
             <Input
               value={highlightLinks}
               onChange={(event) => setHighlightLinks(event.target.value)}
-              placeholder="Optional jw.org / wol.jw.org links"
+              placeholder={highlightType === 'clmm' ? 'Workbook link is added automatically (you can add more links)' : 'Optional jw.org / wol.jw.org links'}
             />
-            <Input
+            <TagInput
               value={highlightTags}
-              onChange={(event) => setHighlightTags(event.target.value)}
-              placeholder="Optional tags"
+              onChange={setHighlightTags}
+              suggestions={tagSuggestions}
+              placeholder={highlightType === 'clmm' ? 'Includes gems and clmm (add more tags)' : 'Add tags'}
             />
-            <Button type="submit" className="w-full">
-              Save highlight
+            <Button type="submit" className="w-full" disabled={isSavingHighlight}>
+              {isSavingHighlight ? 'Saving highlight...' : 'Save highlight'}
             </Button>
           </form>
         </Card>

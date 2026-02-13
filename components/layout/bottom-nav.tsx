@@ -61,8 +61,8 @@ export function BottomNav() {
   })();
 
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-muted/20 bg-card/95 backdrop-blur">
-      <ul className="mx-auto grid max-w-screen-sm grid-cols-5 px-2 py-1">
+    <nav className="fixed bottom-0 left-1/2 z-40 w-full max-w-[30rem] -translate-x-1/2 border-x border-t border-muted/20 bg-card/95 backdrop-blur">
+      <ul className="mx-auto grid grid-cols-5 px-2 py-1">
         {items.map((item) => {
           const active =
             normalizedPath === item.href ||

@@ -18,7 +18,27 @@ service cloud.firestore {
     }
 
     match /profiles/{userId} {
-      allow read, write: if signedIn() && userId == request.auth.uid;
+      allow read: if signedIn() && userId == request.auth.uid;
+      allow create: if signedIn() &&
+        userId == request.auth.uid &&
+        request.resource.data.id == request.auth.uid &&
+        (!('is_beta_tester' in request.resource.data) || request.resource.data.is_beta_tester == false) &&
+        (!('pricing_plan' in request.resource.data) || request.resource.data.pricing_plan in ['free', 'monthly', 'yearly']);
+      allow update: if signedIn() &&
+        userId == request.auth.uid &&
+        request.resource.data.id == resource.data.id &&
+        (
+          (
+            'is_beta_tester' in resource.data &&
+            'is_beta_tester' in request.resource.data &&
+            request.resource.data.is_beta_tester == resource.data.is_beta_tester
+          ) ||
+          (
+            !('is_beta_tester' in resource.data) &&
+            (!('is_beta_tester' in request.resource.data) || request.resource.data.is_beta_tester == false)
+          )
+        ) &&
+        (!('pricing_plan' in request.resource.data) || request.resource.data.pricing_plan in ['free', 'monthly', 'yearly']);
     }
 
     match /households/{householdId} {

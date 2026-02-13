@@ -3,8 +3,8 @@
 @tailwind utilities;
 
 :root {
-  --bg: 40 26% 94%;
-  --surface: 37 30% 97%;
+  --bg: 40 20% 90%;
+  --surface: 37 24% 95%;
   --card: 39 24% 100%;
   --ink: 154 26% 14%;
   --muted: 149 10% 45%;

@@ -2,6 +2,27 @@ import { db } from '@/lib/store/db';
 import { BIBLE_BOOKS, BIBLE_STRUCTURE, countChaptersInRange, getBookIndex } from '@/lib/constants/bible';
 import { toLocalDate } from '@/lib/utils/date';
 
+interface FamilyMemberSnapshot {
+  userId: string;
+  readingStreak: number;
+  daysWithReading: number;
+  sessionsThisWeek: number;
+  chaptersThisWeek: number;
+  sessionsThisMonth: number;
+  chaptersThisMonth: number;
+  lastSessionAt: string | null;
+}
+
+interface FamilyDashboardSnapshot {
+  familyReadingStreak: number;
+  daysWithReading: number;
+  sessionsThisWeek: number;
+  chaptersThisWeek: number;
+  sharedHighlightsThisWeek: number;
+  activeMembersThisWeek: number;
+  members: FamilyMemberSnapshot[];
+}
+
 function countBackwardStreak(days: Set<string>) {
   const cursor = new Date();
   let streak = 0;
@@ -171,5 +192,100 @@ export async function getStats(userId: string) {
     journalsPerMonth: journals.filter((entry) => new Date(entry.entry_date) >= monthAgo).length / 30,
     highlightsPerWeek: highlights.filter((entry) => new Date(entry.updated_at) >= weekAgo).length / 7,
     highlightsPerMonth: highlights.filter((entry) => new Date(entry.updated_at) >= monthAgo).length / 30
+  };
+}
+
+export async function getFamilyDashboard(householdId: string): Promise<FamilyDashboardSnapshot> {
+  const [sessions, highlights] = await Promise.all([
+    db.readingSessions.where('household_id').equals(householdId).toArray(),
+    db.highlights.where('household_id').equals(householdId).toArray()
+  ]);
+
+  const now = new Date();
+  const weekAgo = new Date(now);
+  weekAgo.setDate(weekAgo.getDate() - 7);
+
+  const monthAgo = new Date(now);
+  monthAgo.setMonth(monthAgo.getMonth() - 1);
+
+  const familyReadingDays = new Set(sessions.map((entry) => toLocalDate(entry.session_at)));
+
+  const membersByUser = new Map<
+    string,
+    {
+      readingDays: Set<string>;
+      sessionsThisWeek: number;
+      chaptersThisWeek: number;
+      sessionsThisMonth: number;
+      chaptersThisMonth: number;
+      lastSessionAt: string | null;
+    }
+  >();
+
+  for (const session of sessions) {
+    const current = membersByUser.get(session.user_id) ?? {
+      readingDays: new Set<string>(),
+      sessionsThisWeek: 0,
+      chaptersThisWeek: 0,
+      sessionsThisMonth: 0,
+      chaptersThisMonth: 0,
+      lastSessionAt: null
+    };
+
+    current.readingDays.add(toLocalDate(session.session_at));
+    const chapterCount = getSessionChapterCount(session);
+    const sessionDate = new Date(session.session_at);
+
+    if (sessionDate >= weekAgo) {
+      current.sessionsThisWeek += 1;
+      current.chaptersThisWeek += chapterCount;
+    }
+
+    if (sessionDate >= monthAgo) {
+      current.sessionsThisMonth += 1;
+      current.chaptersThisMonth += chapterCount;
+    }
+
+    if (!current.lastSessionAt || session.session_at > current.lastSessionAt) {
+      current.lastSessionAt = session.session_at;
+    }
+
+    membersByUser.set(session.user_id, current);
+  }
+
+  const members: FamilyMemberSnapshot[] = [...membersByUser.entries()]
+    .map(([userId, value]) => ({
+      userId,
+      readingStreak: countBackwardStreak(value.readingDays),
+      daysWithReading: value.readingDays.size,
+      sessionsThisWeek: value.sessionsThisWeek,
+      chaptersThisWeek: value.chaptersThisWeek,
+      sessionsThisMonth: value.sessionsThisMonth,
+      chaptersThisMonth: value.chaptersThisMonth,
+      lastSessionAt: value.lastSessionAt
+    }))
+    .sort((left, right) => {
+      if (right.chaptersThisWeek !== left.chaptersThisWeek) {
+        return right.chaptersThisWeek - left.chaptersThisWeek;
+      }
+      if (right.sessionsThisWeek !== left.sessionsThisWeek) {
+        return right.sessionsThisWeek - left.sessionsThisWeek;
+      }
+      return (right.lastSessionAt ?? '').localeCompare(left.lastSessionAt ?? '');
+    });
+
+  const sessionsThisWeek = sessions.filter((entry) => new Date(entry.session_at) >= weekAgo);
+  const sharedHighlightsThisWeek = highlights.filter(
+    (entry) => entry.shared_to_household && new Date(entry.updated_at) >= weekAgo
+  ).length;
+
+  return {
+    familyReadingStreak: countBackwardStreak(familyReadingDays),
+    daysWithReading: familyReadingDays.size,
+    sessionsThisWeek: sessionsThisWeek.length,
+    chaptersThisWeek: sessionsThisWeek.reduce((sum, entry) => sum + getSessionChapterCount(entry), 0),
+    sharedHighlightsThisWeek,
+    activeMembersThisWeek: members.filter((entry) => entry.sessionsThisWeek > 0).length,
+    members
   };
 }

@@ -91,6 +91,14 @@ export interface ReminderSetting extends LocalEntity {
   last_shown_at?: string | null;
 }
 
+export interface UserTag {
+  id: UUID;
+  user_id: UUID;
+  tag: string;
+  created_at: string;
+  last_used_at: string;
+}
+
 export interface HouseholdContext {
   householdId: UUID;
   role: Role;

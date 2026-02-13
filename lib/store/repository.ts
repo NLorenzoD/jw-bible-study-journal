@@ -16,6 +16,10 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function normalizeTag(tag: string) {
+  return tag.trim().toLowerCase();
+}
+
 export function createId() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
@@ -40,6 +44,67 @@ async function enqueueMutation(mutation: Omit<SyncMutation, 'id' | 'attempts'>) 
   });
 }
 
+async function upsertUserTags(userId: UUID, tags: string[], timestamp: string) {
+  for (const rawTag of tags) {
+    const tag = normalizeTag(rawTag);
+    if (!tag) {
+      continue;
+    }
+
+    const id = `${userId}_${tag}`;
+    const existing = await db.userTags.get(id);
+    if (existing) {
+      await db.userTags.put({
+        ...existing,
+        last_used_at: timestamp
+      });
+      continue;
+    }
+
+    await db.userTags.put({
+      id,
+      user_id: userId,
+      tag,
+      created_at: timestamp,
+      last_used_at: timestamp
+    });
+  }
+}
+
+async function alignTagsToUserCatalog(userId: UUID, tags: string[]) {
+  const catalog = await db.userTags.where('user_id').equals(userId).toArray();
+  const byNormalized = new Map<string, string>();
+
+  for (const entry of catalog) {
+    const normalized = normalizeTag(entry.tag);
+    if (normalized) {
+      byNormalized.set(normalized, entry.tag);
+    }
+  }
+
+  const resolved: string[] = [];
+  const seen = new Set<string>();
+
+  for (const rawTag of tags) {
+    const normalized = normalizeTag(rawTag);
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+
+    seen.add(normalized);
+    resolved.push(byNormalized.get(normalized) ?? normalized);
+  }
+
+  return resolved;
+}
+
+export async function syncUserTagsFromHighlights(userId: UUID) {
+  const highlights = await db.highlights.where('user_id').equals(userId).toArray();
+  for (const highlight of highlights) {
+    await upsertUserTags(userId, highlight.tags, highlight.updated_at ?? highlight.created_at ?? nowIso());
+  }
+}
+
 export async function addReadingSession(
   payload: Omit<ReadingSession, 'created_at' | 'updated_at' | 'sync_status'>
 ) {
@@ -60,16 +125,58 @@ export async function addJournalEntry(
   payload: Omit<JournalEntry, 'created_at' | 'updated_at' | 'sync_status'>
 ) {
   const record = withLocalMeta(payload);
-  await db.journalEntries.put(record);
+  const alignedTags = await alignTagsToUserCatalog(record.user_id, record.tags);
+  const normalizedRecord: JournalEntry = {
+    ...record,
+    tags: alignedTags
+  };
+
+  await upsertUserTags(normalizedRecord.user_id, normalizedRecord.tags, normalizedRecord.updated_at);
+  await db.journalEntries.put(normalizedRecord);
   await enqueueMutation({
     mutation_id: createId(),
     entity: 'journalEntries',
     operation: 'upsert',
-    record_id: record.id,
-    payload: record,
-    updated_at: record.updated_at
+    record_id: normalizedRecord.id,
+    payload: normalizedRecord,
+    updated_at: normalizedRecord.updated_at
   });
-  return record;
+  return normalizedRecord;
+}
+
+export async function updateJournalEntry(
+  journalEntryId: UUID,
+  patch: Partial<Pick<JournalEntry, 'body' | 'entry_date' | 'tags'>>
+) {
+  const existing = await db.journalEntries.get(journalEntryId);
+  if (!existing) {
+    return null;
+  }
+
+  const timestamp = nowIso();
+  const alignedTags =
+    patch.tags === undefined ? existing.tags : await alignTagsToUserCatalog(existing.user_id, patch.tags);
+
+  const updated: JournalEntry = {
+    ...existing,
+    ...patch,
+    tags: alignedTags,
+    updated_at: timestamp,
+    sync_status: 'pending'
+  };
+
+  await upsertUserTags(updated.user_id, updated.tags, timestamp);
+  await db.journalEntries.put(updated);
+  await enqueueMutation({
+    mutation_id: createId(),
+    entity: 'journalEntries',
+    operation: 'upsert',
+    record_id: updated.id,
+    payload: updated,
+    updated_at: updated.updated_at
+  });
+
+  return updated;
 }
 
 export async function addProject(payload: Omit<StudyProject, 'created_at' | 'updated_at' | 'sync_status'>) {
@@ -133,16 +240,81 @@ export async function updateQuestion(
 
 export async function addHighlight(payload: Omit<Highlight, 'created_at' | 'updated_at' | 'sync_status'>) {
   const record = withLocalMeta(payload);
-  await db.highlights.put(record);
+  const alignedTags = await alignTagsToUserCatalog(record.user_id, record.tags);
+  const normalizedRecord: Highlight = {
+    ...record,
+    tags: alignedTags
+  };
+
+  await upsertUserTags(normalizedRecord.user_id, normalizedRecord.tags, normalizedRecord.updated_at);
+  await db.highlights.put(normalizedRecord);
   await enqueueMutation({
     mutation_id: createId(),
     entity: 'highlights',
     operation: 'upsert',
-    record_id: record.id,
-    payload: record,
-    updated_at: record.updated_at
+    record_id: normalizedRecord.id,
+    payload: normalizedRecord,
+    updated_at: normalizedRecord.updated_at
   });
-  return record;
+  return normalizedRecord;
+}
+
+export async function updateHighlightTags(highlightId: UUID, nextTags: string[]) {
+  const existing = await db.highlights.get(highlightId);
+  if (!existing) {
+    return null;
+  }
+
+  const timestamp = nowIso();
+  const alignedTags = await alignTagsToUserCatalog(existing.user_id, nextTags);
+  const updated: Highlight = {
+    ...existing,
+    tags: alignedTags,
+    updated_at: timestamp,
+    sync_status: 'pending'
+  };
+
+  await upsertUserTags(existing.user_id, alignedTags, timestamp);
+  await db.highlights.put(updated);
+  await enqueueMutation({
+    mutation_id: createId(),
+    entity: 'highlights',
+    operation: 'upsert',
+    record_id: updated.id,
+    payload: updated,
+    updated_at: updated.updated_at
+  });
+
+  return updated;
+}
+
+export async function deleteHighlight(highlightId: UUID) {
+  const existing = await db.highlights.get(highlightId);
+  if (!existing) {
+    return false;
+  }
+
+  const relatedLinks = await db.linkReferences
+    .where('parent_type')
+    .equals('highlight')
+    .and((entry) => entry.parent_id === highlightId)
+    .toArray();
+
+  for (const link of relatedLinks) {
+    await deleteLinkReference(link.id);
+  }
+
+  await db.highlights.delete(highlightId);
+  await enqueueMutation({
+    mutation_id: createId(),
+    entity: 'highlights',
+    operation: 'delete',
+    record_id: highlightId,
+    payload: existing,
+    updated_at: nowIso()
+  });
+
+  return true;
 }
 
 export async function setHighlightShared(highlightId: UUID, shared: boolean) {
@@ -211,6 +383,25 @@ export async function addLinkReference(
     updated_at: record.updated_at
   });
   return record;
+}
+
+export async function deleteLinkReference(linkId: UUID) {
+  const existing = await db.linkReferences.get(linkId);
+  if (!existing) {
+    return false;
+  }
+
+  await db.linkReferences.delete(linkId);
+  await enqueueMutation({
+    mutation_id: createId(),
+    entity: 'linkReferences',
+    operation: 'delete',
+    record_id: linkId,
+    payload: existing,
+    updated_at: nowIso()
+  });
+
+  return true;
 }
 
 export async function upsertReminder(

@@ -28,7 +28,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const profileInitial = profileLabel.trim().charAt(0).toUpperCase();
 
   return (
-    <div className="mx-auto min-h-screen max-w-screen-sm px-4 pb-24 pt-5">
+    <div className="mx-auto min-h-screen w-full max-w-[30rem] px-4 pb-24 pt-5">
       <header className="mb-5 space-y-2">
         <div className="flex items-center justify-between">
           <div>

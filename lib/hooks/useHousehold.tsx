@@ -3,6 +3,7 @@
 import {
   collection,
   doc,
+  getDoc,
   getDocs,
   limit,
   query,
@@ -26,6 +27,20 @@ interface HouseholdState {
 
 const FALLBACK_USER_ID = '00000000-0000-0000-0000-000000000010';
 const FALLBACK_HOUSEHOLD_ID = '00000000-0000-0000-0000-000000000100';
+const DEFAULT_INVITE_ORIGIN = 'https://jw-bible-study-journal.firebaseapp.com';
+
+function getInviteOrigin() {
+  const configuredUrl = process.env.NEXT_PUBLIC_APP_URL?.trim();
+  if (configuredUrl) {
+    return configuredUrl.replace(/\/$/, '');
+  }
+  if (typeof window !== 'undefined') {
+    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+      return window.location.origin;
+    }
+  }
+  return DEFAULT_INVITE_ORIGIN;
+}
 
 const HouseholdContext = createContext<HouseholdState | undefined>(undefined);
 
@@ -54,12 +69,20 @@ async function bootstrapHouseholdClientSide(userId: string, email?: string | nul
 
   const householdId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}`;
   const timestamp = new Date().toISOString();
+  const profileRef = doc(firestore, 'profiles', userId);
+  const existingProfile = await getDoc(profileRef);
 
   await setDoc(
-    doc(firestore, 'profiles', userId),
+    profileRef,
     {
       id: userId,
       email: email ?? null,
+      ...(existingProfile.exists()
+        ? {}
+        : {
+            pricing_plan: 'free',
+            is_beta_tester: false
+          }),
       updated_at: timestamp
     },
     { merge: true }
@@ -84,6 +107,30 @@ async function bootstrapHouseholdClientSide(userId: string, email?: string | nul
   return householdId;
 }
 
+async function ensureProfileDefaultsClient(userId: string, email?: string | null) {
+  const firestore = getFirebaseDb();
+  if (!firestore) {
+    return;
+  }
+
+  const profileRef = doc(firestore, 'profiles', userId);
+  const snapshot = await getDoc(profileRef);
+  const profile = snapshot.data() as Record<string, unknown> | undefined;
+  const timestamp = new Date().toISOString();
+
+  await setDoc(
+    profileRef,
+    {
+      id: userId,
+      email: email ?? (typeof profile?.email === 'string' ? profile.email : null),
+      ...(!snapshot.exists() || !('pricing_plan' in (profile ?? {})) ? { pricing_plan: 'free' } : {}),
+      ...(!snapshot.exists() || !('is_beta_tester' in (profile ?? {})) ? { is_beta_tester: false } : {}),
+      updated_at: timestamp
+    },
+    { merge: true }
+  );
+}
+
 export function HouseholdProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   const firestore = getFirebaseDb();
@@ -106,6 +153,7 @@ export function HouseholdProvider({ children }: { children: React.ReactNode }) {
 
       try {
         setLoading(true);
+        await ensureProfileDefaultsClient(user.uid, user.email);
 
         const member = await findMembership(user.uid);
         if (member?.household_id) {
@@ -148,7 +196,7 @@ export function HouseholdProvider({ children }: { children: React.ReactNode }) {
       role,
       loading,
       createInvite: async () => {
-        if (!firestore || !user) {
+        if (!firestore || !user || role !== 'owner') {
           return null;
         }
 
@@ -166,7 +214,7 @@ export function HouseholdProvider({ children }: { children: React.ReactNode }) {
             used_at: null
           });
 
-          return `${window.location.origin}/settings?invite=${token}`;
+          return `${getInviteOrigin()}/settings?invite=${token}`;
         } catch {
           return null;
         }

@@ -41,6 +41,8 @@ async function main() {
       id: userOne,
       email: 'user1@example.com',
       display_name: 'Partner One',
+      pricing_plan: 'free',
+      is_beta_tester: false,
       updated_at: new Date().toISOString()
     },
     { merge: true }
@@ -51,6 +53,8 @@ async function main() {
       id: userTwo,
       email: 'user2@example.com',
       display_name: 'Partner Two',
+      pricing_plan: 'free',
+      is_beta_tester: false,
       updated_at: new Date().toISOString()
     },
     { merge: true }
