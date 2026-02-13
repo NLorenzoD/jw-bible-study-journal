@@ -127,6 +127,34 @@ function getDocsData(snapshot: QuerySnapshot) {
   });
 }
 
+function isPermissionDeniedError(error: unknown) {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+
+  const code = 'code' in error ? String((error as { code?: unknown }).code ?? '') : '';
+  const message = 'message' in error ? String((error as { message?: unknown }).message ?? '') : '';
+
+  return (
+    code === 'permission-denied' ||
+    code === 'PERMISSION_DENIED' ||
+    code.endsWith('/permission-denied') ||
+    message.toLowerCase().includes('missing or insufficient permissions')
+  );
+}
+
+async function safeFetchDocsData(factory: () => Promise<QuerySnapshot>) {
+  try {
+    const snapshot = await factory();
+    return getDocsData(snapshot);
+  } catch (error) {
+    if (isPermissionDeniedError(error)) {
+      return [] as Array<Record<string, unknown>>;
+    }
+    throw error;
+  }
+}
+
 async function markLocalSynced(entity: string, recordId: string, syncedAt: string) {
   const table = getLocalTable(entity);
   if (!table) {
@@ -233,58 +261,67 @@ async function processMutation(firestore: Firestore, mutation: SyncMutation) {
 
 export async function pullServerData(firestore: Firestore, userId: string, householdId: string) {
   const [
-    readingSnapshot,
-    journalsSnapshot,
-    projectsSnapshot,
-    questionsSnapshot,
-    ownHighlightsSnapshot,
-    sharedHighlightsSnapshot,
-    ownLinksSnapshot,
-    sharedLinksSnapshot,
-    remindersSnapshot
+    ownReading,
+    householdReading,
+    journals,
+    projects,
+    questions,
+    ownHighlights,
+    sharedHighlights,
+    ownLinks,
+    sharedLinks,
+    reminders
   ] = await Promise.all([
-      getDocs(query(collection(firestore, 'readingSessions'), where('household_id', '==', householdId))),
-      getDocs(query(collection(firestore, 'journalEntries'), where('user_id', '==', userId))),
-      getDocs(query(collection(firestore, 'studyProjects'), where('user_id', '==', userId))),
-      getDocs(query(collection(firestore, 'studyQuestions'), where('user_id', '==', userId))),
-      getDocs(query(collection(firestore, 'highlights'), where('user_id', '==', userId))),
+    safeFetchDocsData(() => getDocs(query(collection(firestore, 'readingSessions'), where('user_id', '==', userId)))),
+    safeFetchDocsData(() => getDocs(query(collection(firestore, 'readingSessions'), where('household_id', '==', householdId)))),
+    safeFetchDocsData(() => getDocs(query(collection(firestore, 'journalEntries'), where('user_id', '==', userId)))),
+    safeFetchDocsData(() => getDocs(query(collection(firestore, 'studyProjects'), where('user_id', '==', userId)))),
+    safeFetchDocsData(() => getDocs(query(collection(firestore, 'studyQuestions'), where('user_id', '==', userId)))),
+    safeFetchDocsData(() => getDocs(query(collection(firestore, 'highlights'), where('user_id', '==', userId)))),
+    safeFetchDocsData(() =>
       getDocs(
         query(
           collection(firestore, 'highlights'),
           where('household_id', '==', householdId),
           where('shared_to_household', '==', true)
         )
-      ),
-      getDocs(query(collection(firestore, 'linkReferences'), where('user_id', '==', userId))),
+      )
+    ),
+    safeFetchDocsData(() => getDocs(query(collection(firestore, 'linkReferences'), where('user_id', '==', userId)))),
+    safeFetchDocsData(() =>
       getDocs(
         query(
           collection(firestore, 'linkReferences'),
           where('household_id', '==', householdId),
           where('shared_to_household', '==', true)
         )
-      ),
-      getDocs(query(collection(firestore, 'reminderSettings'), where('user_id', '==', userId)))
-    ]);
+      )
+    ),
+    safeFetchDocsData(() => getDocs(query(collection(firestore, 'reminderSettings'), where('user_id', '==', userId))))
+  ]);
 
-  const reading = getDocsData(readingSnapshot);
-  const journals = getDocsData(journalsSnapshot);
-  const projects = getDocsData(projectsSnapshot);
-  const questions = getDocsData(questionsSnapshot);
+  const readingMap = new Map<string, Record<string, unknown>>();
+  for (const session of [...ownReading, ...householdReading]) {
+    if (typeof session.id === 'string') {
+      readingMap.set(session.id, session);
+    }
+  }
+  const reading = [...readingMap.values()];
 
   const highlightMap = new Map<string, Record<string, unknown>>();
-  for (const highlight of [...getDocsData(ownHighlightsSnapshot), ...getDocsData(sharedHighlightsSnapshot)]) {
+  for (const highlight of [...ownHighlights, ...sharedHighlights]) {
     if (typeof highlight.id === 'string') {
       highlightMap.set(highlight.id, highlight);
     }
   }
 
   const linkMap = new Map<string, Record<string, unknown>>();
-  for (const link of getDocsData(ownLinksSnapshot)) {
+  for (const link of ownLinks) {
     if (typeof link.id === 'string') {
       linkMap.set(link.id, link);
     }
   }
-  for (const link of getDocsData(sharedLinksSnapshot)) {
+  for (const link of sharedLinks) {
     if (typeof link.id === 'string') {
       linkMap.set(link.id, link);
     }
@@ -306,7 +343,6 @@ export async function pullServerData(firestore: Firestore, userId: string, house
   }
 
   const links = [...linkMap.values()];
-  const reminders = getDocsData(remindersSnapshot);
 
   await Promise.all([
     storeRemoteRecords('readingSessions', reading),

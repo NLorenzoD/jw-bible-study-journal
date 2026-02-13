@@ -9,20 +9,20 @@ import { useHousehold } from '@/lib/hooks/useHousehold';
 
 export function useSyncEngine() {
   const { user } = useAuth();
-  const { householdId } = useHousehold();
+  const { householdId, loading: householdLoading } = useHousehold();
   const [lastSyncMessage, setLastSyncMessage] = useState('Waiting for changes');
 
   useEffect(() => {
     const firestore = getFirebaseDb();
 
-    if (!firestore || !user) {
+    if (!firestore || !user || householdLoading) {
       return;
     }
 
     let cancelled = false;
 
     const sync = async () => {
-      if (!navigator.onLine || cancelled) {
+      if (!navigator.onLine || cancelled || householdLoading) {
         return;
       }
 
@@ -60,7 +60,7 @@ export function useSyncEngine() {
       window.clearInterval(interval);
       window.removeEventListener('online', sync);
     };
-  }, [householdId, user]);
+  }, [householdId, householdLoading, user]);
 
   return {
     lastSyncMessage
