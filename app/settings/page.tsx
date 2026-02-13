@@ -1,6 +1,6 @@
 'use client';
 
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, query, setDoc, where } from 'firebase/firestore';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
@@ -9,6 +9,7 @@ import { Card } from '@/components/shared/card';
 import { Input } from '@/components/shared/inputs';
 import { PricingPlanId } from '@/lib/constants/pricing';
 import { getFirebaseDb } from '@/lib/firebase/client';
+import { flushSyncQueue, pullServerData } from '@/lib/firebase/sync';
 import { useAuth } from '@/lib/hooks/useAuth';
 import { useEntitlement } from '@/lib/hooks/useEntitlement';
 import { useHousehold } from '@/lib/hooks/useHousehold';
@@ -45,6 +46,22 @@ export default function SettingsPage() {
   });
   const [pendingInviteToken, setPendingInviteToken] = useState('');
   const [acceptingInvite, setAcceptingInvite] = useState(false);
+  const [syncDiagnosticsStatus, setSyncDiagnosticsStatus] = useState('');
+  const [syncRetryInFlight, setSyncRetryInFlight] = useState(false);
+  const [cloudJournalCount, setCloudJournalCount] = useState<number | null>(null);
+  const [cloudJournalCheckedAt, setCloudJournalCheckedAt] = useState<string | null>(null);
+  const [cloudJournalCheckInFlight, setCloudJournalCheckInFlight] = useState(false);
+
+  const syncQueue = useLiveQuery(() => db.syncMutations.orderBy('updated_at').reverse().toArray(), []);
+  const lastPullMeta = useLiveQuery(() => db.meta.get('last_pull_at'), []);
+  const localJournalCount = useLiveQuery(() => db.journalEntries.where('user_id').equals(userId).count(), [userId]);
+  const localUnsyncedJournalCount = useLiveQuery(
+    async () => {
+      const entries = await db.journalEntries.where('user_id').equals(userId).toArray();
+      return entries.filter((entry) => entry.sync_status !== 'synced').length;
+    },
+    [userId]
+  );
 
   useEffect(() => {
     setReminderEnabled(reminder?.enabled ?? false);
@@ -101,6 +118,30 @@ export default function SettingsPage() {
   const yearlyEquivalent = monthlyPrice * 12;
   const yearlySavings = yearlyEquivalent - yearlyPrice;
   const yearlyDiscountPercent = Math.round((yearlySavings / yearlyEquivalent) * 100);
+  const pendingMutationCount = syncQueue?.length ?? 0;
+  const failedMutationCount = useMemo(
+    () => (syncQueue ?? []).filter((mutation) => mutation.attempts > 0 || Boolean(mutation.last_error)).length,
+    [syncQueue]
+  );
+  const latestSyncError = useMemo(
+    () => (syncQueue ?? []).find((mutation) => mutation.last_error)?.last_error ?? '',
+    [syncQueue]
+  );
+  const queueByEntityLabel = useMemo(() => {
+    if (!syncQueue?.length) {
+      return 'No pending queue';
+    }
+
+    const byEntity = new Map<string, number>();
+    for (const mutation of syncQueue) {
+      byEntity.set(mutation.entity, (byEntity.get(mutation.entity) ?? 0) + 1);
+    }
+
+    return [...byEntity.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([entity, count]) => `${entity}: ${count}`)
+      .join(' · ');
+  }, [syncQueue]);
 
   const pricingPlans = useMemo(
     () => [
@@ -357,6 +398,53 @@ export default function SettingsPage() {
     setInviteStatus(`Selected ${planId === 'free' ? 'Free' : planId === 'monthly' ? 'Plus Monthly' : 'Plus Yearly'} plan.`);
   }
 
+  async function retrySyncNow() {
+    if (!firestore || !user) {
+      setSyncDiagnosticsStatus('Sign in first, then retry sync.');
+      return;
+    }
+
+    setSyncRetryInFlight(true);
+    setSyncDiagnosticsStatus('Sync in progress...');
+
+    try {
+      await pullServerData(firestore, user.uid, householdId);
+      const result = await flushSyncQueue(firestore);
+      const remaining = await db.syncMutations.count();
+
+      if (result.failed) {
+        setSyncDiagnosticsStatus(
+          `Retry finished: ${result.synced} synced, ${result.failed} failed, ${remaining} still queued.`
+        );
+      } else {
+        setSyncDiagnosticsStatus(`Retry finished: ${result.synced} synced, ${remaining} queued.`);
+      }
+    } catch (error) {
+      setSyncDiagnosticsStatus(error instanceof Error ? `Retry failed: ${error.message}` : 'Retry failed.');
+    } finally {
+      setSyncRetryInFlight(false);
+    }
+  }
+
+  async function checkCloudJournalEntries() {
+    if (!firestore || !user) {
+      setSyncDiagnosticsStatus('Sign in first, then check cloud journal entries.');
+      return;
+    }
+
+    setCloudJournalCheckInFlight(true);
+    try {
+      const snapshot = await getDocs(query(collection(firestore, 'journalEntries'), where('user_id', '==', user.uid)));
+      setCloudJournalCount(snapshot.size);
+      setCloudJournalCheckedAt(new Date().toISOString());
+      setSyncDiagnosticsStatus(`Cloud check complete: ${snapshot.size} journal entries found in Firestore.`);
+    } catch (error) {
+      setSyncDiagnosticsStatus(error instanceof Error ? `Cloud check failed: ${error.message}` : 'Cloud check failed.');
+    } finally {
+      setCloudJournalCheckInFlight(false);
+    }
+  }
+
   return (
     <div className="space-y-4">
       <Card className="space-y-3">
@@ -515,6 +603,63 @@ export default function SettingsPage() {
             );
           })}
         </div>
+      </Card>
+
+      <Card className="space-y-3 border-warning/40 bg-warning/5">
+        <div className="space-y-1">
+          <h2 className="font-display text-2xl">Temporary: Sync Diagnostics</h2>
+          <p className="text-xs text-muted">Use for troubleshooting. Remove this card once sync is stable.</p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <div className="rounded-xl bg-surface p-3">
+            <p className="text-xs text-muted">Queued mutations</p>
+            <p className="text-lg font-semibold">{pendingMutationCount}</p>
+          </div>
+          <div className="rounded-xl bg-surface p-3">
+            <p className="text-xs text-muted">Failed mutations</p>
+            <p className="text-lg font-semibold">{failedMutationCount}</p>
+          </div>
+          <div className="rounded-xl bg-surface p-3">
+            <p className="text-xs text-muted">Local journal entries</p>
+            <p className="text-lg font-semibold">{localJournalCount ?? 0}</p>
+          </div>
+          <div className="rounded-xl bg-surface p-3">
+            <p className="text-xs text-muted">Local unsynced journals</p>
+            <p className="text-lg font-semibold">{localUnsyncedJournalCount ?? 0}</p>
+          </div>
+        </div>
+
+        <div className="rounded-xl bg-surface p-3 text-xs text-muted">
+          <p>
+            Last pull:{' '}
+            <span className="font-semibold text-ink">
+              {lastPullMeta?.value ? new Date(lastPullMeta.value).toLocaleString() : 'No pull recorded yet'}
+            </span>
+          </p>
+          <p className="mt-1 break-words">Queue detail: {queueByEntityLabel}</p>
+          {latestSyncError && (
+            <p className="mt-1 break-words text-danger">
+              Latest error: <span className="font-semibold">{latestSyncError}</span>
+            </p>
+          )}
+          <p className="mt-1">
+            Cloud journal count:{' '}
+            <span className="font-semibold text-ink">{cloudJournalCount ?? 'Not checked yet'}</span>
+            {cloudJournalCheckedAt ? ` (checked ${new Date(cloudJournalCheckedAt).toLocaleString()})` : ''}
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <Button onClick={() => void retrySyncNow()} disabled={syncRetryInFlight}>
+            {syncRetryInFlight ? 'Retrying sync...' : 'Retry sync now'}
+          </Button>
+          <Button variant="secondary" onClick={() => void checkCloudJournalEntries()} disabled={cloudJournalCheckInFlight}>
+            {cloudJournalCheckInFlight ? 'Checking cloud...' : 'Check cloud journals'}
+          </Button>
+        </div>
+
+        {syncDiagnosticsStatus && <p className="text-xs text-muted">{syncDiagnosticsStatus}</p>}
       </Card>
 
       {inviteStatus && <p className="text-sm text-muted">{inviteStatus}</p>}
