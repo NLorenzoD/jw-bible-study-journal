@@ -16,8 +16,6 @@ const withPWA = withPWAInit({
 const nextConfig = {
   reactStrictMode: true,
   distDir: isDev ? '.next-dev' : '.next',
-  output: 'export',
-  trailingSlash: true,
   images: {
     unoptimized: true,
     remotePatterns: [
