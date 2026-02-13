@@ -1,13 +1,23 @@
 {
   "hosting": {
-    "public": "out",
-    "predeploy": [
-      "npm run build"
-    ],
+    "site": "jw-bible-study-journal",
+    "public": "firebase-hosting-proxy",
     "ignore": [
       "firebase.json",
       "**/.*",
       "**/node_modules/**"
+    ],
+    "redirects": [
+      {
+        "source": "/",
+        "destination": "https://bible-study-web--jw-bible-study-journal.us-central1.hosted.app",
+        "type": 302
+      },
+      {
+        "source": "/:path*",
+        "destination": "https://bible-study-web--jw-bible-study-journal.us-central1.hosted.app/:path*",
+        "type": 302
+      }
     ]
   },
   "functions": [
