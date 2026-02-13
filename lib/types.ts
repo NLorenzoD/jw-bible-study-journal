@@ -98,7 +98,7 @@ export interface SyncMutation {
   entity: string;
   operation: 'upsert' | 'delete';
   record_id: UUID;
-  payload: Record<string, unknown>;
+  payload: LocalEntity;
   updated_at: string;
   attempts: number;
   last_error?: string;

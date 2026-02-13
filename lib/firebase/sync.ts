@@ -1,5 +1,6 @@
 'use client';
 
+import { Table } from 'dexie';
 import {
   Firestore,
   QuerySnapshot,
@@ -32,6 +33,15 @@ type LocalTableName = keyof Pick<
   'readingSessions' | 'journalEntries' | 'projects' | 'questions' | 'highlights' | 'linkReferences' | 'reminders'
 >;
 
+interface SyncableRecord extends Record<string, unknown> {
+  id: string;
+  updated_at?: string;
+  sync_status?: 'pending' | 'synced' | 'failed';
+  synced_at?: string | null;
+}
+
+type LocalSyncTable = Table<SyncableRecord, string>;
+
 function stripUndefined(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map(stripUndefined);
@@ -51,26 +61,32 @@ function stripUndefined(value: unknown): unknown {
 }
 
 function cleanPayload(payload: Record<string, unknown>) {
-  const { sync_status, synced_at, ...rest } = payload;
+  const rest: Record<string, unknown> = { ...payload };
+  delete rest.sync_status;
+  delete rest.synced_at;
   return stripUndefined(rest) as Record<string, unknown>;
 }
 
-function getLocalTable(entity: string) {
+function asRecord(payload: SyncMutation['payload']) {
+  return payload as unknown as Record<string, unknown>;
+}
+
+function getLocalTable(entity: string): LocalSyncTable | null {
   switch (entity) {
     case 'readingSessions':
-      return db.readingSessions;
+      return db.readingSessions as unknown as LocalSyncTable;
     case 'journalEntries':
-      return db.journalEntries;
+      return db.journalEntries as unknown as LocalSyncTable;
     case 'projects':
-      return db.projects;
+      return db.projects as unknown as LocalSyncTable;
     case 'questions':
-      return db.questions;
+      return db.questions as unknown as LocalSyncTable;
     case 'highlights':
-      return db.highlights;
+      return db.highlights as unknown as LocalSyncTable;
     case 'linkReferences':
-      return db.linkReferences;
+      return db.linkReferences as unknown as LocalSyncTable;
     case 'reminders':
-      return db.reminders;
+      return db.reminders as unknown as LocalSyncTable;
     default:
       return null;
   }
@@ -129,7 +145,7 @@ async function markLocalSynced(entity: string, recordId: string, syncedAt: strin
 }
 
 async function storeRemoteRecords(entity: LocalTableName, records: Array<Record<string, unknown>>) {
-  const table = getLocalTable(entity) as any;
+  const table = getLocalTable(entity);
   if (!table || !records.length) {
     return;
   }
@@ -155,7 +171,7 @@ async function storeRemoteRecords(entity: LocalTableName, records: Array<Record<
       ...(record as Record<string, unknown>),
       sync_status: 'synced',
       synced_at: new Date().toISOString()
-    } as any);
+    } as SyncableRecord);
   }
 }
 
@@ -179,7 +195,8 @@ async function createConflictCopyIfNeeded(firestore: Firestore, mutation: SyncMu
     return;
   }
 
-  const localBody = (mutation.payload.body ?? mutation.payload.notes ?? '') as string;
+  const payloadRecord = asRecord(mutation.payload);
+  const localBody = (payloadRecord.body ?? payloadRecord.notes ?? '') as string;
   const remoteBody = (existing.body ?? existing.notes ?? '') as string;
 
   if (!localBody || localBody === remoteBody) {
@@ -188,7 +205,7 @@ async function createConflictCopyIfNeeded(firestore: Firestore, mutation: SyncMu
 
   const conflictId = createId();
   const conflictPayload = {
-    ...cleanPayload(mutation.payload),
+    ...cleanPayload(payloadRecord),
     id: conflictId,
     conflict_of: mutation.record_id,
     is_conflict_copy: true,
@@ -211,7 +228,7 @@ async function processMutation(firestore: Firestore, mutation: SyncMutation) {
     return;
   }
 
-  await setDoc(doc(firestore, collectionName, mutation.record_id), cleanPayload(mutation.payload), { merge: true });
+  await setDoc(doc(firestore, collectionName, mutation.record_id), cleanPayload(asRecord(mutation.payload)), { merge: true });
 }
 
 export async function pullServerData(firestore: Firestore, userId: string, householdId: string) {

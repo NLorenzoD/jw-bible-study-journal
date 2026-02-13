@@ -41,7 +41,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     let active = true;
-    let unsubscribe = () => undefined;
+    let unsubscribe: () => void = () => {};
 
     const bootstrapAuth = async () => {
       try {

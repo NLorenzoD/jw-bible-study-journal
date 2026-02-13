@@ -9,7 +9,7 @@ import { Input, Select, Textarea } from '@/components/shared/inputs';
 import { useUserContext } from '@/lib/hooks/useUserContext';
 import { db } from '@/lib/store/db';
 import { addProject, addQuestion, createId, updateQuestion } from '@/lib/store/repository';
-import { QuestionStatus } from '@/lib/types';
+import { QuestionStatus, StudyQuestion } from '@/lib/types';
 
 export default function ProjectsPage() {
   const { userId, householdId } = useUserContext();
@@ -35,9 +35,8 @@ export default function ProjectsPage() {
             .and((question) => question.user_id === userId)
             .reverse()
             .sortBy('updated_at')
-        : Promise.resolve([]),
-    [selectedProject?.id, userId],
-    []
+        : Promise.resolve([] as StudyQuestion[]),
+    [selectedProject?.id, userId]
   );
 
   const [newProjectTitle, setNewProjectTitle] = useState('');
@@ -147,10 +146,10 @@ export default function ProjectsPage() {
             </form>
 
             <div className="space-y-3">
-              {questions.map((question) => (
+              {(questions ?? []).map((question) => (
                 <QuestionCard key={question.id} question={question} onPatch={patchQuestion} />
               ))}
-              {!questions.length && <p className="text-sm text-muted">No questions yet.</p>}
+              {!(questions ?? []).length && <p className="text-sm text-muted">No questions yet.</p>}
             </div>
           </div>
         ) : (

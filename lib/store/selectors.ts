@@ -3,7 +3,7 @@ import { BIBLE_BOOKS } from '@/lib/constants/bible';
 import { toLocalDate } from '@/lib/utils/date';
 
 function countBackwardStreak(days: Set<string>) {
-  let cursor = new Date();
+  const cursor = new Date();
   let streak = 0;
 
   while (days.has(toLocalDate(cursor))) {

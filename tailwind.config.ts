@@ -10,8 +10,8 @@ const config: Config = {
   theme: {
     extend: {
       fontFamily: {
-        display: ['var(--font-display)', 'serif'],
-        body: ['var(--font-body)', 'sans-serif']
+        display: ['Iowan Old Style', 'Palatino Linotype', 'Times New Roman', 'serif'],
+        body: ['Avenir Next', 'Segoe UI', 'Helvetica Neue', 'Arial', 'sans-serif']
       },
       colors: {
         bg: 'hsl(var(--bg))',

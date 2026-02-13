@@ -1,7 +1,6 @@
 'use client';
 
 import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { useSearchParams } from 'next/navigation';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useEffect, useMemo, useState } from 'react';
 
@@ -23,7 +22,6 @@ export default function SettingsPage() {
   const { userId, householdId, role } = useUserContext();
   const { createInvite, acceptInvite } = useHousehold();
   const firestore = getFirebaseDb();
-  const searchParams = useSearchParams();
 
   const reminder = useLiveQuery(() => db.reminders.where('user_id').equals(userId).first(), [userId]);
 
@@ -62,7 +60,7 @@ export default function SettingsPage() {
   }, []);
 
   useEffect(() => {
-    const token = searchParams.get('invite');
+    const token = new URLSearchParams(window.location.search).get('invite');
     if (!token || processedInvite) {
       return;
     }
@@ -71,7 +69,7 @@ export default function SettingsPage() {
     acceptInvite(token).then((ok) => {
       setInviteStatus(ok ? 'Invite accepted.' : 'Invite could not be accepted.');
     });
-  }, [acceptInvite, processedInvite, searchParams]);
+  }, [acceptInvite, processedInvite]);
 
   useEffect(() => {
     async function loadProfile() {
