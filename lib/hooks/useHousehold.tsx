@@ -153,7 +153,11 @@ export function HouseholdProvider({ children }: { children: React.ReactNode }) {
 
       try {
         setLoading(true);
-        await ensureProfileDefaultsClient(user.uid, user.email);
+        try {
+          await ensureProfileDefaultsClient(user.uid, user.email);
+        } catch {
+          // Do not block household resolution if profile defaulting fails temporarily.
+        }
 
         const member = await findMembership(user.uid);
         if (member?.household_id) {
@@ -175,6 +179,11 @@ export function HouseholdProvider({ children }: { children: React.ReactNode }) {
         if (active && nextMember?.household_id) {
           setHouseholdId(nextMember.household_id);
           setRole(nextMember.role ?? 'owner');
+        }
+      } catch {
+        if (active) {
+          setHouseholdId(FALLBACK_HOUSEHOLD_ID);
+          setRole('owner');
         }
       } finally {
         if (active) {

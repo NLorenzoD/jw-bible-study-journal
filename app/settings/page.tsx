@@ -400,19 +400,28 @@ export default function SettingsPage() {
       return;
     }
 
-    await setDoc(
-      doc(firestore, 'profiles', user.uid),
-      {
-        id: user.uid,
-        email: user.email ?? null,
-        pricing_plan: planId,
-        is_beta_tester: false,
-        updated_at: new Date().toISOString()
-      },
-      { merge: true }
-    );
+    if (planId !== 'free') {
+      setInviteStatus('Plus plans are managed during onboarding/billing approval.');
+      return;
+    }
 
-    setInviteStatus(`Selected ${planId === 'free' ? 'Free' : planId === 'monthly' ? 'Plus Monthly' : 'Plus Yearly'} plan.`);
+    try {
+      await setDoc(
+        doc(firestore, 'profiles', user.uid),
+        {
+          id: user.uid,
+          email: user.email ?? null,
+          pricing_plan: 'free',
+          is_beta_tester: false,
+          updated_at: new Date().toISOString()
+        },
+        { merge: true }
+      );
+
+      setInviteStatus('Selected Free plan.');
+    } catch {
+      setInviteStatus('Could not change plan right now. Please try again.');
+    }
   }
 
   async function retrySyncNow() {
@@ -800,6 +809,17 @@ export default function SettingsPage() {
         <div className="space-y-2">
           {pricingPlans.map((plan) => {
             const isActive = activePlan === plan.id;
+            const isManagedByOnboarding = plan.id !== 'free';
+            const disablePlanButton = isManagedByOnboarding || (isBetaTester && !isActive);
+            const buttonLabel = isActive
+              ? isBetaTester
+                ? 'Current plan (Beta)'
+                : plan.id === 'free'
+                  ? 'Current plan'
+                  : 'Current plan (Managed)'
+              : isManagedByOnboarding
+                ? 'Managed in onboarding'
+                : `Choose ${plan.label}`;
             return (
               <div
                 key={plan.id}
@@ -831,9 +851,9 @@ export default function SettingsPage() {
                   variant={isActive ? 'primary' : 'secondary'}
                   className="mt-3 w-full"
                   onClick={() => void choosePricingPlan(plan.id)}
-                  disabled={isBetaTester && !isActive}
+                  disabled={disablePlanButton}
                 >
-                  {isActive ? (isBetaTester ? 'Current plan (Beta)' : 'Current plan') : `Choose ${plan.label}`}
+                  {buttonLabel}
                 </Button>
               </div>
             );

@@ -13,12 +13,24 @@ type LinkMetadata = {
   fallback?: boolean;
 };
 
+type PricingPlanId = 'free' | 'monthly' | 'yearly';
+
 function ensureUid(auth: { uid?: string } | undefined) {
   const uid = auth?.uid;
   if (!uid) {
     throw new HttpsError('unauthenticated', 'Authentication required.');
   }
   return uid;
+}
+
+function ensureAdmin(auth: { token?: Record<string, unknown> } | undefined) {
+  if (auth?.token?.admin !== true) {
+    throw new HttpsError('permission-denied', 'Admin privileges required.');
+  }
+}
+
+function isPricingPlanId(value: unknown): value is PricingPlanId {
+  return value === 'free' || value === 'monthly' || value === 'yearly';
 }
 
 function extractDisplayName(auth: { token?: Record<string, unknown> } | undefined) {
@@ -174,6 +186,47 @@ export const acceptHouseholdInvite = onCall(async (request) => {
   await batch.commit();
 
   return { householdId: invite.household_id };
+});
+
+export const setUserEntitlement = onCall(async (request) => {
+  ensureUid(request.auth);
+  ensureAdmin(request.auth);
+
+  const targetUserId = (request.data?.user_id as string | undefined)?.trim();
+  const nextPlan = request.data?.pricing_plan as unknown;
+  const nextIsBetaTester = request.data?.is_beta_tester as unknown;
+
+  if (!targetUserId) {
+    throw new HttpsError('invalid-argument', 'user_id is required.');
+  }
+  if (!isPricingPlanId(nextPlan)) {
+    throw new HttpsError('invalid-argument', 'pricing_plan must be one of free, monthly, yearly.');
+  }
+  if (typeof nextIsBetaTester !== 'boolean') {
+    throw new HttpsError('invalid-argument', 'is_beta_tester must be a boolean.');
+  }
+
+  const profileRef = firestore.collection('profiles').doc(targetUserId);
+  const profileSnapshot = await profileRef.get();
+  const profile = profileSnapshot.data() as Record<string, unknown> | undefined;
+
+  await profileRef.set(
+    {
+      id: targetUserId,
+      email: typeof profile?.email === 'string' ? profile.email : null,
+      pricing_plan: nextPlan,
+      is_beta_tester: nextIsBetaTester,
+      updated_at: new Date().toISOString()
+    },
+    { merge: true }
+  );
+
+  return {
+    ok: true,
+    user_id: targetUserId,
+    pricing_plan: nextPlan,
+    is_beta_tester: nextIsBetaTester
+  };
 });
 
 export const fetchLinkMetadata = onCall(async (request): Promise<LinkMetadata> => {

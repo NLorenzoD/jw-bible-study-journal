@@ -17,28 +17,77 @@ service cloud.firestore {
       return isHouseholdMember(householdId) && get(memberDocPath(householdId, request.auth.uid)).data.role == 'owner';
     }
 
+    function validPricingPlan(value) {
+      return value in ['free', 'monthly', 'yearly'];
+    }
+
+    function hasValidProfileShape(data) {
+      return data.keys().hasOnly([
+        'id',
+        'email',
+        'display_name',
+        'pricing_plan',
+        'is_beta_tester',
+        'created_at',
+        'updated_at'
+      ]) &&
+        data.id == request.auth.uid &&
+        (!('email' in data) || data.email == null || data.email is string) &&
+        (!('display_name' in data) || data.display_name == null || data.display_name is string) &&
+        (!('created_at' in data) || data.created_at is string) &&
+        (!('updated_at' in data) || data.updated_at is string) &&
+        (!('pricing_plan' in data) || (data.pricing_plan is string && validPricingPlan(data.pricing_plan))) &&
+        (!('is_beta_tester' in data) || data.is_beta_tester is bool);
+    }
+
+    function clientCanCreateProfile(data) {
+      return (!('pricing_plan' in data) || data.pricing_plan == 'free') &&
+        (!('is_beta_tester' in data) || data.is_beta_tester == false);
+    }
+
+    function clientCanUpdateBetaFlag(newData, oldData) {
+      return (
+        (
+          'is_beta_tester' in oldData &&
+          'is_beta_tester' in newData &&
+          newData.is_beta_tester == oldData.is_beta_tester
+        ) ||
+        (
+          !('is_beta_tester' in oldData) &&
+          (!('is_beta_tester' in newData) || newData.is_beta_tester == false)
+        )
+      );
+    }
+
+    function clientCanUpdatePricingPlan(newData, oldData) {
+      return (
+        !('pricing_plan' in newData) ||
+        (
+          !('pricing_plan' in oldData) &&
+          newData.pricing_plan == 'free'
+        ) ||
+        (
+          'pricing_plan' in oldData &&
+          (
+            newData.pricing_plan == oldData.pricing_plan ||
+            newData.pricing_plan == 'free'
+          )
+        )
+      );
+    }
+
     match /profiles/{userId} {
       allow read: if signedIn() && userId == request.auth.uid;
       allow create: if signedIn() &&
         userId == request.auth.uid &&
-        request.resource.data.id == request.auth.uid &&
-        (!('is_beta_tester' in request.resource.data) || request.resource.data.is_beta_tester == false) &&
-        (!('pricing_plan' in request.resource.data) || request.resource.data.pricing_plan in ['free', 'monthly', 'yearly']);
+        hasValidProfileShape(request.resource.data) &&
+        clientCanCreateProfile(request.resource.data);
       allow update: if signedIn() &&
         userId == request.auth.uid &&
+        hasValidProfileShape(request.resource.data) &&
         request.resource.data.id == resource.data.id &&
-        (
-          (
-            'is_beta_tester' in resource.data &&
-            'is_beta_tester' in request.resource.data &&
-            request.resource.data.is_beta_tester == resource.data.is_beta_tester
-          ) ||
-          (
-            !('is_beta_tester' in resource.data) &&
-            (!('is_beta_tester' in request.resource.data) || request.resource.data.is_beta_tester == false)
-          )
-        ) &&
-        (!('pricing_plan' in request.resource.data) || request.resource.data.pricing_plan in ['free', 'monthly', 'yearly']);
+        clientCanUpdateBetaFlag(request.resource.data, resource.data) &&
+        clientCanUpdatePricingPlan(request.resource.data, resource.data);
     }
 
     match /households/{householdId} {

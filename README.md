@@ -97,6 +97,7 @@ Cloud Functions used by the app:
 
 - `bootstrapHousehold`
 - `acceptHouseholdInvite`
+- `setUserEntitlement` (admin-only callable, requires `admin` custom claim)
 - `fetchLinkMetadata`
 
 ## 3. Seed data (optional)
