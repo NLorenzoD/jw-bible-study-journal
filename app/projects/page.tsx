@@ -16,6 +16,8 @@ import {
   addQuestion,
   createId,
   deleteLinkReference,
+  deleteProject,
+  updateProject,
   updateQuestion
 } from '@/lib/store/repository';
 import { LinkReference, QuestionStatus, StudyProject, StudyQuestion } from '@/lib/types';
@@ -76,22 +78,25 @@ export default function ProjectsPage() {
     [userId],
     []
   );
-  const projectsChronological = useMemo(
-    () => [...projects].sort((left, right) => left.created_at.localeCompare(right.created_at)),
+  const projectsByTitle = useMemo(
+    () =>
+      [...projects].sort((left, right) => left.title.localeCompare(right.title, undefined, { sensitivity: 'base' })),
     [projects]
   );
-  const projectIds = useMemo(() => projectsChronological.map((project) => project.id), [projectsChronological]);
+  const projectIds = useMemo(() => projectsByTitle.map((project) => project.id), [projectsByTitle]);
   const projectIdSet = useMemo(() => new Set(projectIds), [projectIds]);
 
   const [selectedProjectId, setSelectedProjectId] = useState<string>(ALL_PROJECTS_VALUE);
-  const [questionTargetProjectId, setQuestionTargetProjectId] = useState<string>('');
-  const selectedProject = useMemo(
-    () =>
-      selectedProjectId === ALL_PROJECTS_VALUE
-        ? null
-        : projectsChronological.find((project) => project.id === selectedProjectId) ?? null,
-    [projectsChronological, selectedProjectId]
-  );
+  const [questionProjectChoice, setQuestionProjectChoice] = useState<string>('__new__');
+  const [newQuestionProjectTitle, setNewQuestionProjectTitle] = useState('');
+  const [newQuestionText, setNewQuestionText] = useState('');
+  const [inlineQuestionDrafts, setInlineQuestionDrafts] = useState<Record<string, string>>({});
+  const [submittingQuestionTarget, setSubmittingQuestionTarget] = useState<string | null>(null);
+  const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
+  const [expandedProjectId, setExpandedProjectId] = useState<string | null>(null);
+  const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
+  const [editingProjectTitle, setEditingProjectTitle] = useState('');
+  const [savingProjectTitleId, setSavingProjectTitleId] = useState<string | null>(null);
   const isAllProjectsSelected = selectedProjectId === ALL_PROJECTS_VALUE;
   const isProjectFilteringActive = canUseAdvancedFilters && !isAllProjectsSelected;
 
@@ -99,21 +104,44 @@ export default function ProjectsPage() {
     if (selectedProjectId === ALL_PROJECTS_VALUE) {
       return;
     }
-    const exists = projectsChronological.some((project) => project.id === selectedProjectId);
+    const exists = projectsByTitle.some((project) => project.id === selectedProjectId);
     if (!exists) {
       setSelectedProjectId(ALL_PROJECTS_VALUE);
     }
-  }, [projectsChronological, selectedProjectId]);
+  }, [projectsByTitle, selectedProjectId]);
 
   useEffect(() => {
-    if (!projectsChronological.length) {
-      setQuestionTargetProjectId('');
+    if (questionProjectChoice === '__new__') {
       return;
     }
-    if (!projectsChronological.some((project) => project.id === questionTargetProjectId)) {
-      setQuestionTargetProjectId(projectsChronological[0].id);
+    if (!projectsByTitle.some((project) => project.id === questionProjectChoice)) {
+      setQuestionProjectChoice('__new__');
     }
-  }, [projectsChronological, questionTargetProjectId]);
+  }, [projectsByTitle, questionProjectChoice]);
+
+  useEffect(() => {
+    if (!expandedProjectId) {
+      return;
+    }
+    if (!projectsByTitle.some((project) => project.id === expandedProjectId)) {
+      setExpandedProjectId(null);
+    }
+  }, [expandedProjectId, projectsByTitle]);
+
+  useEffect(() => {
+    if (!editingProjectId) {
+      return;
+    }
+    const existing = projectsByTitle.find((project) => project.id === editingProjectId);
+    if (!existing) {
+      setEditingProjectId(null);
+      setEditingProjectTitle('');
+      return;
+    }
+    if (!savingProjectTitleId) {
+      setEditingProjectTitle(existing.title);
+    }
+  }, [editingProjectId, projectsByTitle, savingProjectTitleId]);
 
   const questions = useLiveQuery(
     async () => {
@@ -156,10 +184,6 @@ export default function ProjectsPage() {
 
     return map;
   }, [questionLinks]);
-
-  const [newProjectTitle, setNewProjectTitle] = useState('');
-  const [newProjectDescription, setNewProjectDescription] = useState('');
-  const [newQuestion, setNewQuestion] = useState('');
   const [questionFilter, setQuestionFilter] = useState<QuestionFilter>('all');
 
   const allQuestions = useMemo(() => questions ?? [], [questions]);
@@ -196,35 +220,25 @@ export default function ProjectsPage() {
 
     return map;
   }, [visibleQuestions]);
-
-  async function createProject(event: FormEvent) {
-    event.preventDefault();
-    if (!newProjectTitle.trim()) {
-      return;
+  const projectQuestionStats = useMemo(() => {
+    const stats = new Map<string, { all: number; open: number; inProgress: number; answered: number }>();
+    for (const question of allQuestions) {
+      const current = stats.get(question.project_id) ?? { all: 0, open: 0, inProgress: 0, answered: 0 };
+      current.all += 1;
+      if (question.status === 'open') {
+        current.open += 1;
+      } else if (question.status === 'in_progress') {
+        current.inProgress += 1;
+      } else if (question.status === 'answered') {
+        current.answered += 1;
+      }
+      stats.set(question.project_id, current);
     }
+    return stats;
+  }, [allQuestions]);
 
-    const project = await addProject({
-      id: createId(),
-      user_id: userId,
-      household_id: householdId,
-      title: newProjectTitle.trim(),
-      description: newProjectDescription.trim(),
-      archived: false
-    });
-
-    setSelectedProjectId(project.id);
-    setNewProjectTitle('');
-    setNewProjectDescription('');
-  }
-
-  async function createQuestion(event: FormEvent) {
-    event.preventDefault();
-    if (!newQuestion.trim()) {
-      return;
-    }
-
-    const targetProjectId = canUseAdvancedFilters ? selectedProject?.id ?? '' : questionTargetProjectId;
-    if (!targetProjectId) {
+  async function addQuestionToProject(projectId: string, questionText: string) {
+    if (!questionText.trim()) {
       return;
     }
 
@@ -232,8 +246,8 @@ export default function ProjectsPage() {
       id: createId(),
       user_id: userId,
       household_id: householdId,
-      project_id: targetProjectId,
-      question: newQuestion.trim(),
+      project_id: projectId,
+      question: questionText.trim(),
       status: 'open',
       notes: '',
       conclusion: '',
@@ -241,13 +255,65 @@ export default function ProjectsPage() {
       is_conflict_copy: false,
       conflict_of: null
     });
+  }
 
-    setNewQuestion('');
+  async function submitProjectQuestion(event: FormEvent) {
+    event.preventDefault();
+    if (!newQuestionText.trim()) {
+      return;
+    }
+
+    setSubmittingQuestionTarget(questionProjectChoice);
+    let targetProjectId = questionProjectChoice;
+    try {
+      if (questionProjectChoice === '__new__') {
+        const title = newQuestionProjectTitle.trim();
+        if (!title) {
+          return;
+        }
+
+        const project = await addProject({
+          id: createId(),
+          user_id: userId,
+          household_id: householdId,
+          title,
+          description: '',
+          archived: false
+        });
+        targetProjectId = project.id;
+        setSelectedProjectId(project.id);
+        setExpandedProjectId(project.id);
+        setQuestionProjectChoice(project.id);
+        setNewQuestionProjectTitle('');
+      }
+
+      await addQuestionToProject(targetProjectId, newQuestionText);
+      setExpandedProjectId(targetProjectId);
+      setNewQuestionText('');
+    } finally {
+      setSubmittingQuestionTarget(null);
+    }
+  }
+
+  async function submitInlineQuestion(projectId: string) {
+    const draft = inlineQuestionDrafts[projectId]?.trim() ?? '';
+    if (!draft) {
+      return;
+    }
+
+    setSubmittingQuestionTarget(projectId);
+    try {
+      await addQuestionToProject(projectId, draft);
+      setInlineQuestionDrafts((current) => ({ ...current, [projectId]: '' }));
+      setExpandedProjectId(projectId);
+    } finally {
+      setSubmittingQuestionTarget(null);
+    }
   }
 
   async function patchQuestion(
     questionId: string,
-    patch: { status?: QuestionStatus; notes?: string; conclusion?: string; shareable_insight?: string }
+    patch: { question?: string; status?: QuestionStatus; notes?: string; conclusion?: string; shareable_insight?: string }
   ) {
     await updateQuestion(questionId, patch);
   }
@@ -289,24 +355,115 @@ export default function ProjectsPage() {
     await deleteLinkReference(linkId);
   }
 
+  function beginProjectTitleEdit(project: StudyProject) {
+    setEditingProjectId(project.id);
+    setEditingProjectTitle(project.title);
+  }
+
+  function cancelProjectTitleEdit() {
+    setEditingProjectId(null);
+    setEditingProjectTitle('');
+  }
+
+  async function saveProjectTitle(projectId: string) {
+    const nextTitle = editingProjectTitle.trim();
+    if (!nextTitle) {
+      return;
+    }
+
+    setSavingProjectTitleId(projectId);
+    try {
+      await updateProject(projectId, { title: nextTitle });
+      setEditingProjectId(null);
+      setEditingProjectTitle('');
+    } finally {
+      setSavingProjectTitleId(null);
+    }
+  }
+
+  async function requestProjectDelete(project: StudyProject, questionCount: number) {
+    const questionWord = questionCount === 1 ? 'question' : 'questions';
+    const firstConfirmation = window.confirm(
+      `Delete "${project.title}" permanently?\n\nThis will remove this project${
+        questionCount > 0 ? `, ${questionCount} ${questionWord}, and attached research links` : ''
+      } from your account and synced devices.\n\nThis action cannot be recovered.`
+    );
+    if (!firstConfirmation) {
+      return;
+    }
+
+    const finalConfirmation = window.confirm(
+      'Final warning: once deleted, this project and all related data cannot be recovered.\n\nPress OK to permanently delete.'
+    );
+    if (!finalConfirmation) {
+      return;
+    }
+
+    setDeletingProjectId(project.id);
+    try {
+      await deleteProject(project.id);
+      setInlineQuestionDrafts((current) => {
+        const next = { ...current };
+        delete next[project.id];
+        return next;
+      });
+
+      if (expandedProjectId === project.id) {
+        setExpandedProjectId(null);
+      }
+      if (editingProjectId === project.id) {
+        setEditingProjectId(null);
+        setEditingProjectTitle('');
+      }
+      if (questionProjectChoice === project.id) {
+        setQuestionProjectChoice('__new__');
+      }
+      if (selectedProjectId === project.id) {
+        setSelectedProjectId(ALL_PROJECTS_VALUE);
+      }
+    } finally {
+      setDeletingProjectId(null);
+    }
+  }
+
   return (
     <div className="space-y-4">
       <Card className="space-y-3">
-        <h2 className="font-display text-2xl">Create project</h2>
-        <form onSubmit={createProject} className="space-y-3">
-          <Input
-            value={newProjectTitle}
-            onChange={(event) => setNewProjectTitle(event.target.value)}
-            placeholder="Project title"
-          />
+        <h2 className="font-display text-2xl">Add Project Question</h2>
+        <form onSubmit={submitProjectQuestion} className="space-y-3">
+          <Select value={questionProjectChoice} onChange={(event) => setQuestionProjectChoice(event.target.value)}>
+            <option value="__new__">Create new project</option>
+            {projectsByTitle.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.title}
+              </option>
+            ))}
+          </Select>
+
+          {questionProjectChoice === '__new__' ? (
+            <Input
+              value={newQuestionProjectTitle}
+              onChange={(event) => setNewQuestionProjectTitle(event.target.value)}
+              placeholder="Project title"
+            />
+          ) : null}
+
           <Textarea
             rows={2}
-            value={newProjectDescription}
-            onChange={(event) => setNewProjectDescription(event.target.value)}
-            placeholder="What are you investigating?"
+            value={newQuestionText}
+            onChange={(event) => setNewQuestionText(event.target.value)}
+            placeholder="Question to investigate"
           />
-          <Button type="submit" className="w-full">
-            Add project
+          <Button
+            type="submit"
+            className="w-full"
+            disabled={
+              !newQuestionText.trim() ||
+              (questionProjectChoice === '__new__' && !newQuestionProjectTitle.trim()) ||
+              submittingQuestionTarget === questionProjectChoice
+            }
+          >
+            {submittingQuestionTarget === questionProjectChoice ? 'Saving question...' : 'Save question'}
           </Button>
         </form>
       </Card>
@@ -316,7 +473,7 @@ export default function ProjectsPage() {
         {canUseAdvancedFilters ? (
           <Select value={selectedProjectId} onChange={(event) => setSelectedProjectId(event.target.value)}>
             <option value={ALL_PROJECTS_VALUE}>All projects</option>
-            {projectsChronological.map((project) => (
+            {projectsByTitle.map((project) => (
               <option key={project.id} value={project.id}>
                 {project.title}
               </option>
@@ -329,58 +486,11 @@ export default function ProjectsPage() {
           </div>
         )}
 
-        {!projectsChronological.length ? (
+        {!projectsByTitle.length ? (
           <p className="text-sm text-muted">No projects yet. Create one to start tracking questions.</p>
         ) : (
           <div className="space-y-3">
-            {canUseAdvancedFilters && selectedProject ? (
-              <>
-                <div className="rounded-xl bg-surface p-3">
-                  <p className="font-semibold">{selectedProject.title}</p>
-                  {selectedProject.description && <p className="mt-1 text-sm text-muted">{selectedProject.description}</p>}
-                </div>
-
-                <form onSubmit={createQuestion} className="space-y-2">
-                  <Textarea
-                    rows={2}
-                    value={newQuestion}
-                    onChange={(event) => setNewQuestion(event.target.value)}
-                    placeholder={`Add a question for ${selectedProject.title}`}
-                  />
-                  <Button type="submit" className="w-full">
-                    Add question
-                  </Button>
-                </form>
-              </>
-            ) : (
-              <div className="space-y-2">
-                <p className="text-xs text-muted">
-                  {canUseAdvancedFilters
-                    ? 'All projects are listed below in chronological order. Choose a specific project above to add a new question.'
-                    : 'All projects are listed below in chronological order.'}
-                </p>
-                {!canUseAdvancedFilters && (
-                  <form onSubmit={createQuestion} className="space-y-2">
-                    <Select value={questionTargetProjectId} onChange={(event) => setQuestionTargetProjectId(event.target.value)}>
-                      {projectsChronological.map((project) => (
-                        <option key={project.id} value={project.id}>
-                          Add question to: {project.title}
-                        </option>
-                      ))}
-                    </Select>
-                    <Textarea
-                      rows={2}
-                      value={newQuestion}
-                      onChange={(event) => setNewQuestion(event.target.value)}
-                      placeholder="Add a question to your selected project"
-                    />
-                    <Button type="submit" className="w-full" disabled={!questionTargetProjectId}>
-                      Add question
-                    </Button>
-                  </form>
-                )}
-              </div>
-            )}
+            <p className="text-xs text-muted">All projects are listed by title. Use Open to view project details.</p>
 
             {canUseAdvancedFilters && (
               <div className="flex flex-wrap gap-2">
@@ -405,16 +515,39 @@ export default function ProjectsPage() {
 
             {!isProjectFilteringActive ? (
               <div className="space-y-3">
-                {projectsChronological.map((project) => (
+                {projectsByTitle.map((project) => (
                   <AllProjectsGroup
                     key={project.id}
                     project={project}
                     questions={visibleQuestionsByProject.get(project.id) ?? []}
+                    stats={projectQuestionStats.get(project.id) ?? { all: 0, open: 0, inProgress: 0, answered: 0 }}
                     linksByQuestion={linksByQuestion}
                     questionFilter={canUseAdvancedFilters ? questionFilter : 'all'}
                     onPatch={patchQuestion}
                     onAddLink={addQuestionLink}
                     onRemoveLink={removeQuestionLink}
+                    isExpanded={expandedProjectId === project.id}
+                    onToggleExpand={() => setExpandedProjectId((current) => (current === project.id ? null : project.id))}
+                    isEditingTitle={editingProjectId === project.id}
+                    editingTitle={editingProjectId === project.id ? editingProjectTitle : project.title}
+                    isSavingTitle={savingProjectTitleId === project.id}
+                    onStartEditTitle={() => beginProjectTitleEdit(project)}
+                    onCancelEditTitle={cancelProjectTitleEdit}
+                    onEditTitleChange={setEditingProjectTitle}
+                    onSaveTitle={() => void saveProjectTitle(project.id)}
+                    draftQuestion={inlineQuestionDrafts[project.id] ?? ''}
+                    onDraftQuestionChange={(value) =>
+                      setInlineQuestionDrafts((current) => ({
+                        ...current,
+                        [project.id]: value
+                      }))
+                    }
+                    onSubmitQuestion={() => void submitInlineQuestion(project.id)}
+                    isSubmittingQuestion={submittingQuestionTarget === project.id}
+                    isDeletingProject={deletingProjectId === project.id}
+                    onDeleteProject={() =>
+                      void requestProjectDelete(project, projectQuestionStats.get(project.id)?.all ?? 0)
+                    }
                   />
                 ))}
               </div>
@@ -446,48 +579,158 @@ export default function ProjectsPage() {
 function AllProjectsGroup({
   project,
   questions,
+  stats,
   linksByQuestion,
   questionFilter,
+  isExpanded,
+  isEditingTitle,
+  editingTitle,
+  isSavingTitle,
+  onToggleExpand,
+  onStartEditTitle,
+  onCancelEditTitle,
+  onEditTitleChange,
+  onSaveTitle,
+  draftQuestion,
+  onDraftQuestionChange,
+  onSubmitQuestion,
+  isSubmittingQuestion,
+  isDeletingProject,
+  onDeleteProject,
   onAddLink,
   onRemoveLink,
   onPatch
 }: {
   project: StudyProject;
   questions: StudyQuestion[];
+  stats: { all: number; open: number; inProgress: number; answered: number };
   linksByQuestion: Map<string, LinkReference[]>;
   questionFilter: QuestionFilter;
+  isExpanded: boolean;
+  isEditingTitle: boolean;
+  editingTitle: string;
+  isSavingTitle: boolean;
+  onToggleExpand: () => void;
+  onStartEditTitle: () => void;
+  onCancelEditTitle: () => void;
+  onEditTitleChange: (value: string) => void;
+  onSaveTitle: () => void;
+  draftQuestion: string;
+  onDraftQuestionChange: (value: string) => void;
+  onSubmitQuestion: () => void;
+  isSubmittingQuestion: boolean;
+  isDeletingProject: boolean;
+  onDeleteProject: () => void;
   onAddLink: (questionId: string, rawUrl: string) => Promise<LinkActionResult>;
   onRemoveLink: (linkId: string) => Promise<void>;
   onPatch: (
     questionId: string,
-    patch: { status?: QuestionStatus; notes?: string; conclusion?: string; shareable_insight?: string }
+    patch: { question?: string; status?: QuestionStatus; notes?: string; conclusion?: string; shareable_insight?: string }
   ) => Promise<void>;
 }) {
   return (
     <div className="space-y-2 rounded-xl border border-muted/20 bg-surface p-3">
-      <div>
-        <p className="font-semibold">{project.title}</p>
-        {project.description && <p className="mt-1 text-sm text-muted">{project.description}</p>}
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          {isEditingTitle ? (
+            <div className="space-y-2">
+              <Input value={editingTitle} onChange={(event) => onEditTitleChange(event.target.value)} placeholder="Project title" />
+              <div className="flex gap-2">
+                <Button type="button" className="px-3 py-1 text-xs" onClick={onSaveTitle} disabled={isSavingTitle || !editingTitle.trim()}>
+                  {isSavingTitle ? 'Saving...' : 'Save title'}
+                </Button>
+                <Button type="button" variant="secondary" className="px-3 py-1 text-xs" onClick={onCancelEditTitle} disabled={isSavingTitle}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <p className="font-semibold">{project.title}</p>
+              {project.description && <p className="mt-1 text-sm text-muted">{project.description}</p>}
+              <p className="mt-1 text-xs text-muted">
+                {stats.all} total · Open {stats.open} · In progress {stats.inProgress} · Answered {stats.answered}
+              </p>
+            </>
+          )}
+        </div>
+        {!isEditingTitle && (
+          <div className="flex shrink-0 gap-2">
+            <Button
+              type="button"
+              variant="secondary"
+              className="px-3 py-1 text-xs"
+              onClick={onStartEditTitle}
+              disabled={isDeletingProject}
+            >
+              Edit title
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              className="px-3 py-1 text-xs"
+              onClick={onToggleExpand}
+              disabled={isDeletingProject}
+            >
+              {isExpanded ? 'Close' : 'Open'}
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              className="px-3 py-1 text-xs text-warning ring-warning/30 hover:bg-warning/10"
+              onClick={onDeleteProject}
+              disabled={isDeletingProject}
+            >
+              {isDeletingProject ? 'Deleting...' : 'Delete'}
+            </Button>
+          </div>
+        )}
       </div>
 
-      {questions.length > 0 ? (
+      {isExpanded ? (
         <div className="space-y-3">
-          {questions.map((question) => (
-            <QuestionCard
-              key={question.id}
-              question={question}
-              links={linksByQuestion.get(question.id) ?? []}
-              onPatch={onPatch}
-              onAddLink={onAddLink}
-              onRemoveLink={onRemoveLink}
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              onSubmitQuestion();
+            }}
+            className="space-y-2 rounded-xl border border-muted/20 bg-card/40 p-2"
+          >
+            <Textarea
+              rows={2}
+              value={draftQuestion}
+              onChange={(event) => onDraftQuestionChange(event.target.value)}
+              placeholder={`Add a question to ${project.title}`}
             />
-          ))}
+            <Button
+              type="submit"
+              className="w-full"
+              disabled={isSubmittingQuestion || isDeletingProject || !draftQuestion.trim()}
+            >
+              {isSubmittingQuestion ? 'Saving question...' : questions.length ? 'Add another question' : 'Add first question'}
+            </Button>
+          </form>
+
+          {questions.length > 0 ? (
+            <div className="space-y-3">
+              {questions.map((question) => (
+                <QuestionCard
+                  key={question.id}
+                  question={question}
+                  links={linksByQuestion.get(question.id) ?? []}
+                  onPatch={onPatch}
+                  onAddLink={onAddLink}
+                  onRemoveLink={onRemoveLink}
+                />
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted">
+              {questionFilter === 'all' ? 'No questions yet.' : 'No questions in this status yet.'}
+            </p>
+          )}
         </div>
-      ) : (
-        <p className="text-sm text-muted">
-          {questionFilter === 'all' ? 'No questions yet.' : 'No questions in this status yet.'}
-        </p>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -512,9 +755,10 @@ function QuestionCard({
   onRemoveLink: (linkId: string) => Promise<void>;
   onPatch: (
     questionId: string,
-    patch: { status?: QuestionStatus; notes?: string; conclusion?: string; shareable_insight?: string }
+    patch: { question?: string; status?: QuestionStatus; notes?: string; conclusion?: string; shareable_insight?: string }
   ) => Promise<void>;
 }) {
+  const [questionText, setQuestionText] = useState(question.question);
   const [notes, setNotes] = useState(question.notes ?? '');
   const [conclusion, setConclusion] = useState(question.conclusion ?? '');
   const [insight, setInsight] = useState(question.shareable_insight ?? '');
@@ -562,7 +806,12 @@ function QuestionCard({
 
   return (
     <Card className="space-y-2 border-muted/25 bg-surface/90">
-      <p className="font-semibold text-ink">{question.question}</p>
+      <Textarea
+        rows={3}
+        value={questionText}
+        onChange={(event) => setQuestionText(event.target.value)}
+        className="text-base font-medium leading-relaxed text-ink"
+      />
       <Select
         value={status}
         onChange={(event) => {
@@ -639,7 +888,7 @@ function QuestionCard({
       <Button
         variant="secondary"
         className="w-full"
-        onClick={() => onPatch(question.id, { notes, conclusion, shareable_insight: insight })}
+        onClick={() => onPatch(question.id, { question: questionText.trim(), notes, conclusion, shareable_insight: insight })}
       >
         Save updates
       </Button>

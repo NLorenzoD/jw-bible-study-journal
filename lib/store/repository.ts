@@ -193,6 +193,59 @@ export async function addProject(payload: Omit<StudyProject, 'created_at' | 'upd
   return record;
 }
 
+export async function updateProject(
+  projectId: UUID,
+  patch: Partial<Pick<StudyProject, 'title' | 'description' | 'archived'>>
+) {
+  const existing = await db.projects.get(projectId);
+  if (!existing) {
+    return null;
+  }
+
+  const updated: StudyProject = {
+    ...existing,
+    ...patch,
+    updated_at: nowIso(),
+    sync_status: 'pending'
+  };
+
+  await db.projects.put(updated);
+  await enqueueMutation({
+    mutation_id: createId(),
+    entity: 'projects',
+    operation: 'upsert',
+    record_id: updated.id,
+    payload: updated,
+    updated_at: updated.updated_at
+  });
+
+  return updated;
+}
+
+export async function deleteProject(projectId: UUID) {
+  const existing = await db.projects.get(projectId);
+  if (!existing) {
+    return false;
+  }
+
+  const relatedQuestions = await db.questions.where('project_id').equals(projectId).toArray();
+  for (const question of relatedQuestions) {
+    await deleteQuestion(question.id);
+  }
+
+  await db.projects.delete(projectId);
+  await enqueueMutation({
+    mutation_id: createId(),
+    entity: 'projects',
+    operation: 'delete',
+    record_id: projectId,
+    payload: existing,
+    updated_at: nowIso()
+  });
+
+  return true;
+}
+
 export async function addQuestion(
   payload: Omit<StudyQuestion, 'created_at' | 'updated_at' | 'sync_status'>
 ) {
@@ -211,7 +264,7 @@ export async function addQuestion(
 
 export async function updateQuestion(
   questionId: UUID,
-  patch: Partial<Pick<StudyQuestion, 'status' | 'notes' | 'conclusion' | 'shareable_insight'>>
+  patch: Partial<Pick<StudyQuestion, 'question' | 'status' | 'notes' | 'conclusion' | 'shareable_insight'>>
 ) {
   const existing = await db.questions.get(questionId);
   if (!existing) {
@@ -236,6 +289,35 @@ export async function updateQuestion(
   });
 
   return updated;
+}
+
+export async function deleteQuestion(questionId: UUID) {
+  const existing = await db.questions.get(questionId);
+  if (!existing) {
+    return false;
+  }
+
+  const relatedLinks = await db.linkReferences
+    .where('parent_type')
+    .equals('question')
+    .and((entry) => entry.parent_id === questionId)
+    .toArray();
+
+  for (const link of relatedLinks) {
+    await deleteLinkReference(link.id);
+  }
+
+  await db.questions.delete(questionId);
+  await enqueueMutation({
+    mutation_id: createId(),
+    entity: 'questions',
+    operation: 'delete',
+    record_id: questionId,
+    payload: existing,
+    updated_at: nowIso()
+  });
+
+  return true;
 }
 
 export async function addHighlight(payload: Omit<Highlight, 'created_at' | 'updated_at' | 'sync_status'>) {
@@ -275,6 +357,35 @@ export async function updateHighlightTags(highlightId: UUID, nextTags: string[])
   };
 
   await upsertUserTags(existing.user_id, alignedTags, timestamp);
+  await db.highlights.put(updated);
+  await enqueueMutation({
+    mutation_id: createId(),
+    entity: 'highlights',
+    operation: 'upsert',
+    record_id: updated.id,
+    payload: updated,
+    updated_at: updated.updated_at
+  });
+
+  return updated;
+}
+
+export async function updateHighlightContent(
+  highlightId: UUID,
+  patch: Partial<Pick<Highlight, 'reference' | 'summary' | 'short_answer' | 'long_answer' | 'explanation'>>
+) {
+  const existing = await db.highlights.get(highlightId);
+  if (!existing) {
+    return null;
+  }
+
+  const updated: Highlight = {
+    ...existing,
+    ...patch,
+    updated_at: nowIso(),
+    sync_status: 'pending'
+  };
+
   await db.highlights.put(updated);
   await enqueueMutation({
     mutation_id: createId(),

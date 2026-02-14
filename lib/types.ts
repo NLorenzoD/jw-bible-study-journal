@@ -65,6 +65,9 @@ export interface Highlight extends LocalEntity {
   household_id: UUID;
   reference: string;
   summary: string;
+  short_answer?: string;
+  long_answer?: string;
+  explanation?: string;
   tags: string[];
   project_id?: UUID | null;
   shared_to_household: boolean;
