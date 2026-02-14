@@ -1,8 +1,9 @@
 # Firebase App Hosting configuration
-# These are Firebase Web SDK values (public client config), not server secrets.
+# Firebase Web SDK values are public at runtime, but API key is sourced from Secret Manager
+# to avoid committing key-like strings into git history.
 env:
   - variable: NEXT_PUBLIC_FIREBASE_API_KEY
-    value: AIzaSyBm141E1wdSAqTduYLvToWUQtjVcfmqamg
+    secret: NEXT_PUBLIC_FIREBASE_API_KEY
     availability: [BUILD, RUNTIME]
   - variable: NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN
     value: jw-bible-study-journal.firebaseapp.com
