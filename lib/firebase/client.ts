@@ -9,6 +9,7 @@ let firebaseApp: FirebaseApp | null = null;
 let firebaseAuth: Auth | null = null;
 let firebaseDb: Firestore | null = null;
 let firebaseFunctions: Functions | null = null;
+const sanitizeEnv = (value: string | undefined) => (typeof value === 'string' ? value.trim() : value);
 
 export function isFirebaseConfigured() {
   return Boolean(
@@ -20,13 +21,20 @@ export function isFirebaseConfigured() {
 }
 
 function getFirebaseConfig() {
+  const apiKey = sanitizeEnv(process.env.NEXT_PUBLIC_FIREBASE_API_KEY);
+  const authDomain = sanitizeEnv(process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN);
+  const projectId = sanitizeEnv(process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID);
+  const storageBucket = sanitizeEnv(process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET);
+  const messagingSenderId = sanitizeEnv(process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID);
+  const appId = sanitizeEnv(process.env.NEXT_PUBLIC_FIREBASE_APP_ID);
+
   return {
-    apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-    authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-    projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-    storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
-    messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
-    appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID
+    apiKey,
+    authDomain,
+    projectId,
+    storageBucket,
+    messagingSenderId,
+    appId
   };
 }
 
