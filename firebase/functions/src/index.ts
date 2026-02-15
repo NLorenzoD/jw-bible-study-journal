@@ -1,4 +1,5 @@
 import { initializeApp } from 'firebase-admin/app';
+import { getAuth } from 'firebase-admin/auth';
 import { getFirestore } from 'firebase-admin/firestore';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
 
@@ -70,13 +71,27 @@ async function ensureProfileDefaults(uid: string, email: string | null | undefin
   }
 
   const currentIsBeta = profile?.is_beta_tester === true;
+  const nextIsBeta = currentIsBeta || allowlistedBeta;
+
+  if (allowlistedBeta) {
+    const auth = getAuth();
+    const userRecord = await auth.getUser(uid);
+    const existingClaims = userRecord.customClaims ?? {};
+
+    if (existingClaims.is_beta_tester !== true) {
+      await auth.setCustomUserClaims(uid, {
+        ...existingClaims,
+        is_beta_tester: true
+      });
+    }
+  }
 
   await profileRef.set(
     {
       id: uid,
       email: email ?? (typeof profile?.email === 'string' ? profile.email : null),
       ...(!snapshot.exists || !('pricing_plan' in (profile ?? {})) ? { pricing_plan: 'free' } : {}),
-      is_beta_tester: currentIsBeta || allowlistedBeta,
+      is_beta_tester: nextIsBeta,
       updated_at: now
     },
     { merge: true }
