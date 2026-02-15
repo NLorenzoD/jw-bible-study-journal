@@ -15,6 +15,10 @@ type LinkMetadata = {
 
 type PricingPlanId = 'free' | 'monthly' | 'yearly';
 
+function normalizeEmail(value: string) {
+  return value.trim().toLowerCase();
+}
+
 function ensureUid(auth: { uid?: string } | undefined) {
   const uid = auth?.uid;
   if (!uid) {
@@ -56,13 +60,23 @@ async function ensureProfileDefaults(uid: string, email: string | null | undefin
   const snapshot = await profileRef.get();
   const profile = snapshot.data() as Record<string, unknown> | undefined;
   const now = new Date().toISOString();
+  const normalizedEmail = typeof email === 'string' ? normalizeEmail(email) : null;
+
+  let allowlistedBeta = false;
+  if (normalizedEmail) {
+    const allowlistDoc = await firestore.collection('betaTesterAllowlist').doc(normalizedEmail).get();
+    const allowlistData = allowlistDoc.data() as { active?: boolean } | undefined;
+    allowlistedBeta = allowlistDoc.exists && allowlistData?.active !== false;
+  }
+
+  const currentIsBeta = profile?.is_beta_tester === true;
 
   await profileRef.set(
     {
       id: uid,
       email: email ?? (typeof profile?.email === 'string' ? profile.email : null),
       ...(!snapshot.exists || !('pricing_plan' in (profile ?? {})) ? { pricing_plan: 'free' } : {}),
-      ...(!snapshot.exists || !('is_beta_tester' in (profile ?? {})) ? { is_beta_tester: false } : {}),
+      is_beta_tester: currentIsBeta || allowlistedBeta,
       updated_at: now
     },
     { merge: true }
